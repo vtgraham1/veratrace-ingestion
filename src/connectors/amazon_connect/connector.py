@@ -119,16 +119,22 @@ class AmazonConnectConnector(BaseConnector):
             return self._assumed_creds
 
         role_arn = self.credentials.get("roleArn", "")
+        external_id = self.credentials.get("externalId", "")
         session_name = f"veratrace-{self.integration_account_id[:8]}"
 
         logger.info("Assuming role %s for region %s", role_arn[:60], self._region)
 
         sts = boto3.client("sts", region_name=self._region)
-        resp = sts.assume_role(
-            RoleArn=role_arn,
-            RoleSessionName=session_name,
-            DurationSeconds=3600,
-        )
+        assume_params = {
+            "RoleArn": role_arn,
+            "RoleSessionName": session_name,
+            "DurationSeconds": 3600,
+        }
+        # External ID prevents confused deputy attacks — required by our CloudFormation template
+        if external_id:
+            assume_params["ExternalId"] = external_id
+
+        resp = sts.assume_role(**assume_params)
         creds = resp["Credentials"]
         self._assumed_creds = {
             "aws_access_key_id": creds["AccessKeyId"],
