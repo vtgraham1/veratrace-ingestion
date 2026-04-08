@@ -21,6 +21,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from src.sync.scheduler import sync_account, fetch_active_accounts
 from src.config import SUPABASE_URL
 
+INGESTION_API_KEY = os.environ.get("INGESTION_API_KEY", "")
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
@@ -38,12 +40,24 @@ class IngestionHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_POST(self):
+        if not self._check_api_key():
+            return
         if self.path == "/sync":
             self._handle_sync()
         elif self.path == "/test-connection":
             self._handle_test_connection()
         else:
             self._json_response(404, {"error": "Not found"})
+
+    def _check_api_key(self):
+        """Validate X-API-Key header. Returns True if authorized."""
+        if not INGESTION_API_KEY:
+            return True  # no key configured = open (dev mode)
+        key = self.headers.get("X-API-Key", "")
+        if key != INGESTION_API_KEY:
+            self._json_response(401, {"error": "Invalid or missing API key"})
+            return False
+        return True
 
     def do_GET(self):
         if self.path == "/health":

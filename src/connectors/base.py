@@ -5,6 +5,7 @@ Provides a consistent contract for setup, sync, webhooks, schema validation,
 and health reporting. The runtime infrastructure (rate limiter, retry engine,
 cursor manager) wraps these methods transparently.
 """
+from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
