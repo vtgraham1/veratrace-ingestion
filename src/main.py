@@ -40,6 +40,8 @@ class IngestionHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         if self.path == "/sync":
             self._handle_sync()
+        elif self.path == "/test-connection":
+            self._handle_test_connection()
         else:
             self._json_response(404, {"error": "Not found"})
 
@@ -48,6 +50,41 @@ class IngestionHandler(BaseHTTPRequestHandler):
             self._json_response(200, {"status": "ok", "supabase": bool(SUPABASE_URL)})
         else:
             self._json_response(404, {"error": "Not found"})
+
+    def _handle_test_connection(self):
+        """Test AWS credentials by assuming the role and calling DescribeInstance."""
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            body = json.loads(self.rfile.read(length)) if length > 0 else {}
+
+            role_arn = body.get("roleArn", "")
+            instance_arn = body.get("instanceArn", "")
+            external_id = body.get("externalId", "")
+            region = body.get("region", "us-east-1")
+
+            if not role_arn or not instance_arn:
+                self._json_response(400, {"error": "roleArn and instanceArn required"})
+                return
+
+            from src.connectors.amazon_connect.connector import AmazonConnectConnector
+
+            connector = AmazonConnectConnector(
+                integration_account_id="test",
+                instance_id="test",
+                credentials={"roleArn": role_arn, "externalId": external_id},
+                external_identity={"tenantId": instance_arn},
+            )
+            result = connector.test_connection()
+            self._json_response(200, {
+                "success": result.success,
+                "message": result.message,
+                "region": result.region,
+                "details": getattr(result, "details", None),
+            })
+
+        except Exception as e:
+            logger.error("Test connection failed: %s", str(e)[:200])
+            self._json_response(500, {"success": False, "message": str(e)[:200]})
 
     def _handle_sync(self):
         """Trigger an immediate sync for a specific integration account."""
