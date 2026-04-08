@@ -1,7 +1,9 @@
-name: Deploy Ingestion Service
+name: CI — Ingestion Service
 
 on:
   push:
+    branches: [main]
+  pull_request:
     branches: [main]
 
 jobs:
@@ -16,56 +18,5 @@ jobs:
       - run: pip install boto3 pytest
       - run: python -m pytest tests/ -v
 
-  deploy:
-    name: Deploy to server
-    needs: test
-    runs-on: ubuntu-latest
-    steps:
-      - name: Deploy
-        env:
-          DEPLOY_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
-        run: |
-          KEY_FILE=$(mktemp)
-          chmod 600 "$KEY_FILE"
-          echo "$DEPLOY_KEY" > "$KEY_FILE"
-
-          ssh -i "$KEY_FILE" -o StrictHostKeyChecking=no -o ConnectTimeout=10 vera@159.203.133.76 << 'REMOTE'
-            set -e
-
-            # Clone or update the repo
-            if [ -d ~/veratrace-ingestion ]; then
-              cd ~/veratrace-ingestion
-              git fetch origin
-              git reset --hard origin/main
-            else
-              git clone https://github.com/vtgraham1/veratrace-ingestion.git ~/veratrace-ingestion
-              cd ~/veratrace-ingestion
-            fi
-
-            # Install dependencies
-            pip3 install boto3 --quiet 2>/dev/null || true
-
-            # Create env file
-            if [ ! -f ~/veratrace-ingestion/.env ]; then
-              echo "# Created by deploy — fill in values" > ~/veratrace-ingestion/.env
-            fi
-
-            echo "Deploy complete — $(git log -1 --format='%h %s')"
-          REMOTE
-
-          rm -f "$KEY_FILE"
-
-      - name: Setup env vars and cron
-        env:
-          DEPLOY_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
-          VB_SUPABASE_URL: ${{ secrets.VERABLOG_SUPABASE_URL }}
-          VB_SUPABASE_KEY: ${{ secrets.VERABLOG_SUPABASE_KEY }}
-        run: |
-          KEY_FILE=$(mktemp)
-          chmod 600 "$KEY_FILE"
-          echo "$DEPLOY_KEY" > "$KEY_FILE"
-
-          ssh -i "$KEY_FILE" -o StrictHostKeyChecking=no -o ConnectTimeout=10 vera@159.203.133.76 \
-            "printf 'SUPABASE_URL=${VB_SUPABASE_URL}\nSUPABASE_SERVICE_ROLE_KEY=${VB_SUPABASE_KEY}\nCONTROL_PLANE_URL=https://veratrace-control-plane.onrender.com\n' > ~/veratrace-ingestion/.env && chmod 600 ~/veratrace-ingestion/.env && echo 'Ingestion .env written'; if ! crontab -l 2>/dev/null | grep -q 'veratrace-ingestion'; then (crontab -l 2>/dev/null; echo ''; echo '# Veratrace Ingestion Service — sync every 15 min weekdays 7am-7pm PT (14:00-02:00 UTC)'; echo '*/15 14-23,0-2 * * 1-5 set -a && source ~/veratrace-ingestion/.env && set +a && cd ~/veratrace-ingestion && python3 -m src.sync.scheduler >> /opt/veraagents/logs/ingestion.log 2>&1') | crontab - && echo 'Ingestion cron added'; else echo 'Ingestion cron already present'; fi"
-
-          rm -f "$KEY_FILE"
+  # Deploy is handled by veraagents/.github/workflows/deploy.yml
+  # which clones this repo, writes .env, sets up cron, and starts the API.
