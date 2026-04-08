@@ -1,0 +1,16 @@
+[project]
+name = "veratrace-ingestion"
+version = "0.1.0"
+description = "Enterprise integration service — connects vendor APIs and produces TwuSignals"
+requires-python = ">=3.12"
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest", "ruff"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
