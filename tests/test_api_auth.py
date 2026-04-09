@@ -27,6 +27,10 @@ from http.server import HTTPServer
 @pytest.fixture(scope="module")
 def server():
     """Start the ingestion API on a random port for testing."""
+    # Clear rate tracker to avoid cross-test pollution
+    import src.main
+    src.main._rate_tracker.clear()
+
     srv = HTTPServer(("127.0.0.1", 0), IngestionHandler)
     port = srv.server_address[1]
     thread = threading.Thread(target=srv.serve_forever, daemon=True)
