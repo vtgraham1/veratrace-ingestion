@@ -1,0 +1,99 @@
+{
+  "_instructions": [
+    "Create this contact flow in the Amazon Connect console:",
+    "1. Go to Amazon Connect instance → Contact Flows → Create contact flow",
+    "2. Name: Veratrace-Lex-Demo",
+    "3. Build the flow using the visual editor with the blocks below",
+    "4. Save and Publish the flow",
+    "5. Note the Contact Flow ID from the flow's ARN (last segment)",
+    "",
+    "IMPORTANT: Before creating this flow, you must:",
+    "- Create the VeratraceSandboxBot in Amazon Lex V2 (see lex-bot-definition.json)",
+    "- Add the bot as a resource in Connect: Instance Settings → Contact Flows → Amazon Lex → Add bot",
+    "- Create at least one queue: 'GeneralSupport' (Contact Flows → Queues → Add queue)"
+  ],
+  "flowName": "Veratrace-Lex-Demo",
+  "description": "Routes contacts through Lex bot. Bot-resolved contacts disconnect. Failed/dispute contacts transfer to queue.",
+  "flowType": "CONTACT_FLOW",
+  "blocks": [
+    {
+      "order": 1,
+      "type": "SetContactAttributes",
+      "description": "Tag contact as warmer-generated",
+      "attributes": {
+        "source": "veratrace-warmer",
+        "flowVersion": "1.0"
+      },
+      "next": 2
+    },
+    {
+      "order": 2,
+      "type": "GetCustomerInput",
+      "description": "Invoke Lex bot to understand customer intent",
+      "lexBot": {
+        "name": "VeratraceSandboxBot",
+        "alias": "LIVE",
+        "region": "us-west-2"
+      },
+      "textToSpeechPrompt": "Welcome to Veratrace support. How can I help you today?",
+      "onSuccess": {
+        "_comment": "Lex recognized an intent and fulfilled it",
+        "next": 3
+      },
+      "onError": {
+        "_comment": "Lex failed to understand or FallbackIntent triggered",
+        "next": 5
+      }
+    },
+    {
+      "order": 3,
+      "type": "CheckContactAttributes",
+      "description": "Check which intent was matched — route billing disputes to human",
+      "attribute": "$.Lex.IntentName",
+      "conditions": [
+        {
+          "value": "BillingDispute",
+          "next": 5
+        },
+        {
+          "value": "FallbackIntent",
+          "next": 5
+        }
+      ],
+      "default": 4
+    },
+    {
+      "order": 4,
+      "type": "SetContactAttributes_Then_Disconnect",
+      "description": "Bot resolved — set attributes and hang up",
+      "attributes": {
+        "botResolved": "true",
+        "resolvedByIntent": "$.Lex.IntentName",
+        "botConfidence": "$.Lex.IntentConfidence"
+      },
+      "playPrompt": "Your request has been handled. Thank you for contacting us!",
+      "next": "Disconnect"
+    },
+    {
+      "order": 5,
+      "type": "SetContactAttributes_Then_Transfer",
+      "description": "Bot couldn't resolve — set attributes and transfer to queue",
+      "attributes": {
+        "botResolved": "false",
+        "transferReason": "bot_escalation",
+        "failedIntent": "$.Lex.IntentName"
+      },
+      "setQueue": "GeneralSupport",
+      "transferPrompt": "Let me connect you with a specialist. Please hold.",
+      "next": "TransferToQueue"
+    }
+  ],
+  "_visualEditorSteps": [
+    "1. Entry Point → Set Contact Attributes (source=veratrace-warmer)",
+    "2. → Get Customer Input (Lex: VeratraceSandboxBot / LIVE)",
+    "3. Success → Check Contact Attributes ($.Lex.IntentName)",
+    "4.   If BillingDispute or FallbackIntent → Set Attributes (botResolved=false) → Set Queue (GeneralSupport) → Transfer to Queue",
+    "5.   Otherwise (ResetPassword, CheckBalance) → Set Attributes (botResolved=true) → Play Prompt → Disconnect",
+    "6. Error → Set Attributes (botResolved=false) → Set Queue (GeneralSupport) → Transfer to Queue"
+  ]
+}

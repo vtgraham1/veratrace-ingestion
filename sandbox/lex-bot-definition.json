@@ -1,0 +1,98 @@
+{
+  "_instructions": [
+    "Create this bot in the Amazon Lex V2 console (us-west-2):",
+    "1. Go to Amazon Lex → Bots → Create bot",
+    "2. Bot name: VeratraceSandboxBot",
+    "3. IAM role: Create a role with basic Lex permissions",
+    "4. COPPA: No",
+    "5. Language: English (US)",
+    "6. Create the 4 intents below",
+    "7. Build the bot",
+    "8. Create alias 'LIVE' and deploy",
+    "9. In Amazon Connect console: Contact Flows → add the Lex bot as a resource"
+  ],
+  "botName": "VeratraceSandboxBot",
+  "description": "Sandbox bot for Veratrace warming — handles password resets, balance checks, and routes billing disputes to humans.",
+  "language": "en_US",
+  "intents": [
+    {
+      "name": "ResetPassword",
+      "description": "Customer wants to reset their password. Bot auto-resolves.",
+      "sampleUtterances": [
+        "I need to reset my password",
+        "reset password",
+        "I forgot my password",
+        "can't log in",
+        "locked out of my account",
+        "password reset",
+        "help me reset my login",
+        "I need a new password"
+      ],
+      "slots": [
+        {
+          "name": "AccountEmail",
+          "slotType": "AMAZON.EmailAddress",
+          "prompt": "What email is associated with your account?",
+          "required": true
+        }
+      ],
+      "confirmationPrompt": "I'll send a password reset link to {AccountEmail}. Is that correct?",
+      "fulfillmentMessage": "Done — a password reset link has been sent to your email. Is there anything else I can help with?",
+      "closingResponse": "Thanks for contacting us. Have a great day!"
+    },
+    {
+      "name": "CheckBalance",
+      "description": "Customer wants to check their account balance. Bot auto-resolves.",
+      "sampleUtterances": [
+        "What's my balance",
+        "check my balance",
+        "how much do I owe",
+        "account balance",
+        "what do I owe",
+        "show me my balance",
+        "how much is my bill"
+      ],
+      "slots": [
+        {
+          "name": "AccountNumber",
+          "slotType": "AMAZON.Number",
+          "prompt": "What's your account number?",
+          "required": true
+        }
+      ],
+      "fulfillmentMessage": "Your current balance is $127.50. Your next payment of $45.00 is due on the 15th. Anything else?",
+      "closingResponse": "Thanks for checking in. Have a great day!"
+    },
+    {
+      "name": "BillingDispute",
+      "description": "Customer wants to dispute a charge. Bot cannot resolve — transfers to human agent.",
+      "sampleUtterances": [
+        "I want to dispute a charge",
+        "there's a wrong charge on my account",
+        "billing dispute",
+        "I was overcharged",
+        "incorrect charge",
+        "I don't recognize this charge",
+        "dispute a payment",
+        "charge I didn't make"
+      ],
+      "slots": [
+        {
+          "name": "DisputeAmount",
+          "slotType": "AMAZON.Number",
+          "prompt": "What's the amount of the charge you'd like to dispute?",
+          "required": true
+        }
+      ],
+      "fulfillmentMessage": "I understand you'd like to dispute a charge of ${DisputeAmount}. Let me connect you with a billing specialist who can help.",
+      "_behavior": "TRANSFER_TO_QUEUE — this intent should trigger a transfer to the BillingQueue in the contact flow"
+    },
+    {
+      "name": "FallbackIntent",
+      "description": "Catches everything the bot doesn't understand. Transfers to human.",
+      "parentIntentSignature": "AMAZON.FallbackIntent",
+      "closingResponse": "I'm sorry, I didn't quite understand that. Let me connect you with someone who can help.",
+      "_behavior": "TRANSFER_TO_QUEUE — routes to GeneralSupport queue"
+    }
+  ]
+}
