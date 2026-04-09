@@ -56,6 +56,7 @@ CONTACT_SCENARIOS = [
     {
         "weight": 20,
         "reason": "password_reset",
+        "chat_message": "I need to reset my password",
         "ai_handled": "true",
         "ai_agent": "ResolveAI-v3",
         "ai_confidence": "0.95",
@@ -66,6 +67,7 @@ CONTACT_SCENARIOS = [
     {
         "weight": 15,
         "reason": "account_balance_inquiry",
+        "chat_message": "What is my account balance?",
         "ai_handled": "true",
         "ai_agent": "ConnectBot-IVR",
         "ai_confidence": "0.92",
@@ -78,6 +80,7 @@ CONTACT_SCENARIOS = [
     {
         "weight": 15,
         "reason": "billing_dispute",
+        "chat_message": "I want to dispute a charge on my account",
         "ai_handled": "true",
         "ai_agent": "SmartRoute-AI",
         "ai_confidence": "0.38",
@@ -88,6 +91,7 @@ CONTACT_SCENARIOS = [
     {
         "weight": 10,
         "reason": "contract_negotiation",
+        "chat_message": "I need to discuss my contract terms",
         "ai_handled": "true",
         "ai_agent": "SmartRoute-AI",
         "ai_confidence": "0.22",
@@ -100,6 +104,7 @@ CONTACT_SCENARIOS = [
     {
         "weight": 8,
         "reason": "escalation_from_ai",
+        "chat_message": "This is really complicated and I need help",
         "ai_handled": "false",
         "ai_agent": "ResolveAI-v3",
         "ai_confidence": "0.15",
@@ -110,6 +115,7 @@ CONTACT_SCENARIOS = [
     {
         "weight": 7,
         "reason": "compliance_audit_request",
+        "chat_message": "I need compliance documentation for an audit",
         "ai_handled": "false",
         "ai_agent": "none",
         "ai_confidence": "0.0",
@@ -122,6 +128,7 @@ CONTACT_SCENARIOS = [
     {
         "weight": 6,
         "reason": "outage_report",
+        "chat_message": "Your service is down and I need this fixed immediately",
         "ai_handled": "true",
         "ai_agent": "ConnectBot-IVR",
         "ai_confidence": "0.88",
@@ -133,6 +140,7 @@ CONTACT_SCENARIOS = [
     {
         "weight": 4,
         "reason": "urgent_callback",
+        "chat_message": "I need someone to call me back urgently",
         "ai_handled": "true",
         "ai_agent": "SmartRoute-AI",
         "ai_confidence": "0.65",
@@ -146,6 +154,7 @@ CONTACT_SCENARIOS = [
     {
         "weight": 6,
         "reason": "technical_support_complex",
+        "chat_message": "I have a complex technical issue with the integration",
         "ai_handled": "true",
         "ai_agent": "ResolveAI-v3",
         "ai_confidence": "0.55",
@@ -158,6 +167,7 @@ CONTACT_SCENARIOS = [
     {
         "weight": 4,
         "reason": "language_transfer",
+        "chat_message": "Necesito ayuda en espanol por favor",
         "ai_handled": "false",
         "ai_agent": "none",
         "ai_confidence": "0.0",
@@ -172,6 +182,7 @@ CONTACT_SCENARIOS = [
     {
         "weight": 3,
         "reason": "vendor_bpo_contact",
+        "chat_message": "I am calling about my outsourced support account",
         "ai_handled": "true",
         "ai_agent": "VendorBot-External",
         "ai_confidence": "0.71",
@@ -253,6 +264,16 @@ class ConnectWarmer(BaseWarmer):
                 connect_timeout=10,
                 read_timeout=30,
             ),
+        )
+
+    def _get_participant_client(self):
+        creds = self._assume_role()
+        return boto3.client(
+            "connectparticipant",
+            region_name=self._region,
+            aws_access_key_id=creds["aws_access_key_id"],
+            aws_secret_access_key=creds["aws_secret_access_key"],
+            aws_session_token=creds["aws_session_token"],
         )
 
     def _discover_contact_flow(self, client):
@@ -366,6 +387,29 @@ class ConnectWarmer(BaseWarmer):
                 Attributes=attributes,
             )
             contact_id = resp["ContactId"]
+
+            # Send a chat message to trigger the Lex bot in the contact flow
+            chat_message = scenario.get("chat_message", "I need help")
+            participant_token = resp.get("ParticipantToken", "")
+            if participant_token:
+                try:
+                    participant_client = self._get_participant_client()
+                    conn = participant_client.create_participant_connection(
+                        ParticipantToken=participant_token,
+                        Type=["CONNECTION_CREDENTIALS"],
+                    )
+                    conn_token = conn["ConnectionCredentials"]["ConnectionToken"]
+                    participant_client.send_message(
+                        ConnectionToken=conn_token,
+                        ContentType="text/plain",
+                        Content=chat_message,
+                    )
+                    # Brief wait then disconnect so the contact closes and CTR generates
+                    time.sleep(1)
+                    participant_client.disconnect_participant(ConnectionToken=conn_token)
+                except Exception as e:
+                    logger.debug("Chat message send failed (non-fatal): %s", str(e)[:80])
+
             return {"id": contact_id, "type": "CHAT", "customer": customer_name, "scenario": scenario["reason"]}
 
     def verify_activity(self, activity_id: str) -> bool:
