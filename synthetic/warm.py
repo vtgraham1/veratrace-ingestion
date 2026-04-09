@@ -50,7 +50,7 @@ SCENARIOS = {
 
 def trigger_sync(integration_account_id: str = ""):
     """Call the ingestion API to trigger an immediate sync."""
-    api_url = os.environ.get("INGESTION_API_URL", "http://localhost:8090")
+    api_url = os.environ.get("INGESTION_API_URL", "https://ingestion.veratrace.ai")
     api_key = os.environ.get("INGESTION_API_KEY", "")
 
     headers = {"Content-Type": "application/json"}
