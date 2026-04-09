@@ -39,10 +39,22 @@ CUSTOMER_NAMES = [
 CUSTOMER_SEGMENTS = ["enterprise", "mid-market", "smb", "consumer"]
 PRIORITIES = ["critical", "high", "medium", "medium", "low"]
 
-# Contact scenarios that exercise different AI/human handoff patterns
+# ── Contact scenarios with enterprise-realistic distribution weights ──────────
+#
+# Weights model a typical enterprise contact center:
+#   ~35% AI auto-resolved (password resets, FAQ, balance checks)
+#   ~25% AI triages then human resolves (billing, contracts, complaints)
+#   ~15% Human-only (compliance, legal, complex issues)
+#   ~10% SLA-critical (outages, escalations)
+#   ~10% Multi-touch / transfers
+#    ~5% Vendor reconciliation edge cases (the 80% vs 42% story)
+#
+# Over 1,100 contacts/month this produces a consistent, realistic mix.
+
 CONTACT_SCENARIOS = [
-    # AI fully resolves — no human needed
+    # ── AI fully resolves (35% combined weight) ──────────────────────────
     {
+        "weight": 20,
         "reason": "password_reset",
         "ai_handled": "true",
         "ai_agent": "ResolveAI-v3",
@@ -52,6 +64,7 @@ CONTACT_SCENARIOS = [
         "description": "Password reset — AI auto-resolved",
     },
     {
+        "weight": 15,
         "reason": "account_balance_inquiry",
         "ai_handled": "true",
         "ai_agent": "ConnectBot-IVR",
@@ -60,8 +73,10 @@ CONTACT_SCENARIOS = [
         "resolution": "ai_auto_resolved",
         "description": "Balance check — AI self-service",
     },
-    # AI routes to human — handoff scenario
+
+    # ── AI triages, human resolves (25% combined weight) ─────────────────
     {
+        "weight": 15,
         "reason": "billing_dispute",
         "ai_handled": "true",
         "ai_agent": "SmartRoute-AI",
@@ -71,6 +86,7 @@ CONTACT_SCENARIOS = [
         "description": "Billing dispute — AI triaged, human resolved",
     },
     {
+        "weight": 10,
         "reason": "contract_negotiation",
         "ai_handled": "true",
         "ai_agent": "SmartRoute-AI",
@@ -79,8 +95,10 @@ CONTACT_SCENARIOS = [
         "resolution": "human_resolved_after_ai",
         "description": "Contract negotiation — AI routed to specialist",
     },
-    # Human handles directly — AI couldn't help
+
+    # ── Human-only (15% combined weight) ─────────────────────────────────
     {
+        "weight": 8,
         "reason": "escalation_from_ai",
         "ai_handled": "false",
         "ai_agent": "ResolveAI-v3",
@@ -90,6 +108,7 @@ CONTACT_SCENARIOS = [
         "description": "Complex issue — AI escalated to human",
     },
     {
+        "weight": 7,
         "reason": "compliance_audit_request",
         "ai_handled": "false",
         "ai_agent": "none",
@@ -98,8 +117,10 @@ CONTACT_SCENARIOS = [
         "resolution": "human_only",
         "description": "Compliance request — requires human judgment",
     },
-    # SLA breach scenarios
+
+    # ── SLA-critical (10% combined weight) ───────────────────────────────
     {
+        "weight": 6,
         "reason": "outage_report",
         "ai_handled": "true",
         "ai_agent": "ConnectBot-IVR",
@@ -109,8 +130,21 @@ CONTACT_SCENARIOS = [
         "resolution": "sla_at_risk",
         "description": "Outage report — SLA critical, transferred to human",
     },
-    # Multi-touch / transfer scenario
     {
+        "weight": 4,
+        "reason": "urgent_callback",
+        "ai_handled": "true",
+        "ai_agent": "SmartRoute-AI",
+        "ai_confidence": "0.65",
+        "human_needed": "true",
+        "sla_target_seconds": "60",
+        "resolution": "sla_met",
+        "description": "Urgent callback — AI fast-tracked to available agent",
+    },
+
+    # ── Multi-touch / transfers (10% weight) ─────────────────────────────
+    {
+        "weight": 6,
         "reason": "technical_support_complex",
         "ai_handled": "true",
         "ai_agent": "ResolveAI-v3",
@@ -121,8 +155,22 @@ CONTACT_SCENARIOS = [
         "resolution": "transferred_then_resolved",
         "description": "Complex tech issue — AI + 2 human agents",
     },
-    # Vendor reconciliation scenario (the 80% vs 42% story)
     {
+        "weight": 4,
+        "reason": "language_transfer",
+        "ai_handled": "false",
+        "ai_agent": "none",
+        "ai_confidence": "0.0",
+        "human_needed": "true",
+        "transferred": "true",
+        "transfer_reason": "language",
+        "resolution": "transferred_then_resolved",
+        "description": "Language mismatch — transferred to bilingual agent",
+    },
+
+    # ── Vendor reconciliation (5% combined weight) ───────────────────────
+    {
+        "weight": 3,
         "reason": "vendor_bpo_contact",
         "ai_handled": "true",
         "ai_agent": "VendorBot-External",
@@ -130,9 +178,10 @@ CONTACT_SCENARIOS = [
         "human_needed": "false",
         "vendor_claimed_ai": "true",
         "resolution": "vendor_ai_claimed",
-        "description": "BPO vendor contact — claimed as AI-resolved",
+        "description": "BPO vendor contact — legitimately AI-resolved",
     },
     {
+        "weight": 2,
         "reason": "vendor_bpo_contact",
         "ai_handled": "false",
         "ai_agent": "VendorBot-External",
@@ -143,6 +192,9 @@ CONTACT_SCENARIOS = [
         "description": "BPO vendor contact — claimed AI but actually human",
     },
 ]
+
+# Pre-compute weights for random.choices
+_SCENARIO_WEIGHTS = [s["weight"] for s in CONTACT_SCENARIOS]
 
 
 class ConnectWarmer(BaseWarmer):
@@ -257,8 +309,8 @@ class ConnectWarmer(BaseWarmer):
         if not flow_id:
             raise RuntimeError("No contact flow available")
 
-        # Pick a random scenario that exercises different AI/human patterns
-        scenario = random.choice(CONTACT_SCENARIOS)
+        # Weighted selection ensures consistent enterprise-realistic distribution
+        scenario = random.choices(CONTACT_SCENARIOS, weights=_SCENARIO_WEIGHTS, k=1)[0]
         use_task = random.random() < scenario_config.get("task_ratio", 0.3)
         customer_name = random.choice(CUSTOMER_NAMES)
         segment = random.choice(CUSTOMER_SEGMENTS)

@@ -12,7 +12,7 @@ from unittest.mock import MagicMock, patch
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from synthetic.warmers.base import BaseWarmer, WarmResult
-from synthetic.warmers.amazon_connect import ConnectWarmer, CUSTOMER_NAMES, CONTACT_SCENARIOS
+from synthetic.warmers.amazon_connect import ConnectWarmer, CUSTOMER_NAMES, CONTACT_SCENARIOS, _SCENARIO_WEIGHTS
 
 
 # ── Base Warmer Tests ────────────────────────────────────────────────────────
@@ -119,6 +119,26 @@ class TestConnectWarmer:
             assert "ai_handled" in s, f"Missing ai_handled in {s}"
             assert "resolution" in s, f"Missing resolution in {s}"
             assert "description" in s, f"Missing description in {s}"
+            assert "weight" in s, f"Missing weight in {s}"
+
+    def test_weights_sum_to_100(self):
+        total = sum(_SCENARIO_WEIGHTS)
+        assert total == 100, f"Weights sum to {total}, expected 100"
+
+    def test_weight_distribution_matches_enterprise_pattern(self):
+        # Group weights by category
+        ai_resolved = sum(s["weight"] for s in CONTACT_SCENARIOS if s["resolution"] == "ai_auto_resolved")
+        ai_to_human = sum(s["weight"] for s in CONTACT_SCENARIOS if s["resolution"] == "human_resolved_after_ai")
+        human_only = sum(s["weight"] for s in CONTACT_SCENARIOS if s["resolution"] in ("human_escalation", "human_only"))
+        sla = sum(s["weight"] for s in CONTACT_SCENARIOS if "sla" in s["resolution"])
+        transfers = sum(s["weight"] for s in CONTACT_SCENARIOS if s.get("transferred"))
+        vendor = sum(s["weight"] for s in CONTACT_SCENARIOS if s.get("vendor_claimed_ai"))
+
+        # Enterprise reality: AI resolves 30-40%, rest needs humans
+        assert 30 <= ai_resolved <= 40, f"AI auto-resolved weight {ai_resolved}% outside 30-40% range"
+        assert ai_to_human >= 20, f"AI→human handoff weight {ai_to_human}% too low"
+        assert human_only >= 10, f"Human-only weight {human_only}% too low"
+        assert vendor >= 3, f"Vendor reconciliation weight {vendor}% — need at least some"
 
     @patch.object(ConnectWarmer, "_get_client")
     def test_validate_access_discovers_flow(self, mock_get_client):
