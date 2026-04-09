@@ -1,0 +1,182 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Veratrace Sandbox - Lex V2 bot with 4 intents for AI-attributed contact warming.
+  Deploy in the same region as your Connect instance (us-west-2).
+
+Parameters:
+  ConnectInstanceArn:
+    Type: String
+    Description: Your Amazon Connect instance ARN
+    Default: 'arn:aws:connect:us-west-2:291925528464:instance/47f7baa6-ffb0-4afd-a025-9d277271e699'
+
+Resources:
+
+  # ── IAM Role for Lex Bot ──────────────────────────────────────────────────
+  LexBotRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub 'VeratraceSandboxLex-${AWS::StackName}'
+      Description: "Service role for Veratrace sandbox Lex bot"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lexv2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonLexFullAccess
+
+  # ── Lex V2 Bot ────────────────────────────────────────────────────────────
+  SandboxBot:
+    Type: AWS::Lex::Bot
+    Properties:
+      Name: VeratraceSandboxBot
+      Description: >
+        Sandbox bot for Veratrace warming. Handles password resets and balance
+        checks (auto-resolve). Routes billing disputes to human agents.
+      RoleArn: !GetAtt LexBotRole.Arn
+      DataPrivacy:
+        ChildDirected: false
+      IdleSessionTTLInSeconds: 300
+      AutoBuildBotLocales: true
+      BotLocales:
+        - LocaleId: en_US
+          NluConfidenceThreshold: 0.40
+          Intents:
+            # ── Intent 1: ResetPassword (bot auto-resolves) ──────────────
+            - Name: ResetPassword
+              Description: Customer wants to reset their password
+              SampleUtterances:
+                - Utterance: I need to reset my password
+                - Utterance: reset password
+                - Utterance: I forgot my password
+                - Utterance: locked out of my account
+                - Utterance: help me reset my login
+                - Utterance: I need a new password
+                - Utterance: can not log in
+                - Utterance: password reset please
+              SlotPriorities:
+                - Priority: 1
+                  SlotName: AccountEmail
+              Slots:
+                - Name: AccountEmail
+                  SlotTypeName: AMAZON.EmailAddress
+                  ValueElicitationSetting:
+                    SlotConstraint: Required
+                    PromptSpecification:
+                      MessageGroupsList:
+                        - Message:
+                            PlainTextMessage:
+                              Value: What email is associated with your account?
+                      MaxRetries: 2
+              IntentClosingSetting:
+                ClosingResponse:
+                  MessageGroupsList:
+                    - Message:
+                        PlainTextMessage:
+                          Value: Done - a password reset link has been sent to your email. Have a great day!
+
+            # ── Intent 2: CheckBalance (bot auto-resolves) ───────────────
+            - Name: CheckBalance
+              Description: Customer wants to check their account balance
+              SampleUtterances:
+                - Utterance: check my balance
+                - Utterance: what is my balance
+                - Utterance: how much do I owe
+                - Utterance: account balance
+                - Utterance: show me my balance
+                - Utterance: what do I owe
+                - Utterance: how much is my bill
+              SlotPriorities:
+                - Priority: 1
+                  SlotName: AccountNumber
+              Slots:
+                - Name: AccountNumber
+                  SlotTypeName: AMAZON.Number
+                  ValueElicitationSetting:
+                    SlotConstraint: Required
+                    PromptSpecification:
+                      MessageGroupsList:
+                        - Message:
+                            PlainTextMessage:
+                              Value: What is your account number?
+                      MaxRetries: 2
+              IntentClosingSetting:
+                ClosingResponse:
+                  MessageGroupsList:
+                    - Message:
+                        PlainTextMessage:
+                          Value: Your current balance is $127.50. Your next payment is due on the 15th. Anything else?
+
+            # ── Intent 3: BillingDispute (transfer to human) ─────────────
+            - Name: BillingDispute
+              Description: Customer wants to dispute a charge - requires human agent
+              SampleUtterances:
+                - Utterance: I want to dispute a charge
+                - Utterance: wrong charge on my account
+                - Utterance: billing dispute
+                - Utterance: I was overcharged
+                - Utterance: incorrect charge
+                - Utterance: charge I did not make
+                - Utterance: dispute a payment
+              IntentClosingSetting:
+                ClosingResponse:
+                  MessageGroupsList:
+                    - Message:
+                        PlainTextMessage:
+                          Value: I understand you need help with a billing dispute. Let me connect you with a specialist.
+
+            # ── Intent 4: Fallback (transfer to human) ───────────────────
+            - Name: FallbackIntent
+              Description: Catches everything the bot cannot understand
+              ParentIntentSignature: AMAZON.FallbackIntent
+              IntentClosingSetting:
+                ClosingResponse:
+                  MessageGroupsList:
+                    - Message:
+                        PlainTextMessage:
+                          Value: I did not quite understand that. Let me connect you with someone who can help.
+
+  # ── Bot Version (triggers build) ──────────────────────────────────────────
+  SandboxBotVersion:
+    Type: AWS::Lex::BotVersion
+    DependsOn: SandboxBot
+    Properties:
+      BotId: !Ref SandboxBot
+      BotVersionLocaleSpecification:
+        - LocaleId: en_US
+          BotVersionLocaleDetails:
+            SourceBotVersion: DRAFT
+
+  # ── Bot Alias (LIVE deployment) ───────────────────────────────────────────
+  SandboxBotAlias:
+    Type: AWS::Lex::BotAlias
+    Properties:
+      BotId: !Ref SandboxBot
+      BotAliasName: LIVE
+      BotVersion: !GetAtt SandboxBotVersion.BotVersion
+      SentimentAnalysisSettings:
+        DetectSentiment: true
+
+Outputs:
+  BotId:
+    Description: Lex Bot ID - use this to associate the bot with your Connect instance
+    Value: !Ref SandboxBot
+
+  BotAliasId:
+    Description: Lex Bot Alias ID (LIVE)
+    Value: !GetAtt SandboxBotAlias.BotAliasId
+
+  BotArn:
+    Description: Lex Bot ARN
+    Value: !GetAtt SandboxBot.Arn
+
+  NextSteps:
+    Description: Manual steps after stack creation
+    Value: >
+      1. Go to Amazon Connect console > your instance > Contact Flows > Amazon Lex > Add the VeratraceSandboxBot.
+      2. Create a queue called GeneralSupport (Routing > Queues > Add queue).
+      3. Create a contact flow called Veratrace-Lex-Demo using the visual editor
+         (see sandbox/contact-flow-definition.json for the flow logic).
+      4. Publish the flow and note the Contact Flow ID.
