@@ -13,14 +13,15 @@ The boundary is the `twu_signals` table and the `POST /instances/{id}/tasks` tri
 | Connector | Auth | Polling | Status |
 |-----------|------|---------|--------|
 | Amazon Connect | IAM AssumeRole + ExternalId | SearchContacts API (15 min) | **Live** |
-| Salesforce | OAuth 2.0 | CDC + Bulk API 2.0 | Planned |
+| Salesforce | OAuth 2.0 | SOQL + CaseHistory (15 min) | **Built** (OAuth pending backend PR) |
 | Zendesk | OAuth 2.0 / API token | Webhooks + Incremental Export | Planned |
 | OpenAI / Anthropic | Proxy / SDK wrapper | Per request | Planned |
 
 New connectors auto-register — see [CONTRIBUTING.md](CONTRIBUTING.md).
 
-## Signal Extraction (Amazon Connect)
+## Signal Extraction
 
+### Amazon Connect
 Each CTR produces 2-4 signals:
 
 | Signal | Type | When |
@@ -29,6 +30,20 @@ Each CTR produces 2-4 signals:
 | `ai_interaction` | AI | When Lex bot processed the contact |
 | `agent_connected` | HUMAN | When a human agent took over |
 | `contact_completed` | varies | Always — includes Contact Lens, structured attributes |
+
+### Salesforce
+Cases produce 2-4 signals + CaseHistory attribution signals:
+
+| Signal | Type | When |
+|--------|------|------|
+| `case_created` | SYSTEM | Always — from CreatedDate |
+| `ai_interaction` | AI | When custom AI fields exist (AI_Handled__c) |
+| `case_field_changed` | varies | Per CaseHistory entry — HUMAN/SYSTEM/AI via CreatedBy.UserType |
+| `case_resolved` | HUMAN/AI | When IsClosed=true — includes resolution time |
+| `opp_created` | SYSTEM | Opportunity created |
+| `opp_closed` | HUMAN | Opportunity won/lost |
+
+**AI attribution inference:** CaseHistory tracks every field change with `CreatedBy.UserType` (Standard=HUMAN, AutomatedProcess=SYSTEM, Einstein/Agentforce=AI). Zero customer setup required.
 
 ## HTTP API
 
@@ -80,7 +95,7 @@ python -m pytest tests/ -v                    # Unit tests (97 tests)
 python -m pytest tests/contract/ --contract   # Live API contract tests (6 tests)
 ```
 
-**97 tests** across 7 files:
+**144 tests** across 9 files:
 
 | File | Tests | What |
 |------|-------|------|
@@ -88,7 +103,9 @@ python -m pytest tests/contract/ --contract   # Live API contract tests (6 tests
 | `test_signal_mapper_ai.py` | 23 | Lex bot, Contact Lens, structured attributes |
 | `test_api_auth.py` | 6 | API key enforcement |
 | `test_synthetic_shapes.py` | 16 | JSONB contract against Java entity models |
-| `test_warmers.py` | 18 | Warmer behavior + scenario distribution |
+| `test_salesforce.py` | 36 | Case/Opp mapping, CaseHistory attribution, actor classifier, config |
+| `test_warmers.py` | 18 | Connect warmer behavior + scenario distribution |
+| `test_warmers_salesforce.py` | 11 | Salesforce warmer scenarios + distribution |
 | `test_platform.py` | 17 | Auto-discovery, CONFIG, rate limiter, audit log |
 | `contract/test_amazon_connect_live.py` | 6 | Live sandbox API tests (nightly) |
 
