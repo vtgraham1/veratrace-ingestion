@@ -22,7 +22,7 @@ from datetime import datetime, timedelta, timezone
 from src.connectors.base import (
     BaseConnector, ConnectionTestResult, SyncResult, ConnectorHealth,
 )
-from src.connectors.salesforce.signal_mapper import map_records_to_signals
+from src.connectors.salesforce.signal_mapper import map_records_to_signals, map_case_history_to_signals
 from src.connectors.salesforce.schema import REQUIRED_FIELDS
 
 logger = logging.getLogger(__name__)
@@ -171,11 +171,52 @@ class SalesforceConnector(BaseConnector):
                 )
                 signals.extend(mapped)
 
+            # For Cases, also fetch CaseHistory for attribution
+            if obj_type == "Case" and records:
+                case_ids = [r["Id"] for r in records if r.get("Id")]
+                history_signals, hist_calls = self._fetch_case_history(case_ids, since_timestamp)
+                signals.extend(history_signals)
+                api_calls += hist_calls
+
             next_url = result.get("nextRecordsUrl")
             if not next_url or not records:
                 break
 
             logger.info("Fetched page: %d %s records, %d signals total", len(records), obj_type, len(signals))
+
+        return signals, api_calls
+
+    def _fetch_case_history(self, case_ids, since_timestamp):
+        """Fetch CaseHistory with actor attribution for a batch of Cases."""
+        if not case_ids:
+            return [], 0
+
+        ids_str = ", ".join(f"'{cid}'" for cid in case_ids)
+        soql = (
+            f"SELECT CaseId, CreatedById, CreatedBy.UserType, CreatedBy.Name, "
+            f"CreatedDate, Field, OldValue, NewValue "
+            f"FROM CaseHistory "
+            f"WHERE CaseId IN ({ids_str}) "
+            f"AND CreatedDate > {since_timestamp} "
+            f"ORDER BY CreatedDate ASC"
+        )
+
+        signals = []
+        api_calls = 0
+
+        try:
+            time.sleep(self._sync_delay)
+            result = self._soql_query(soql)
+            api_calls += 1
+
+            history_records = result.get("records", [])
+            if history_records:
+                signals = map_case_history_to_signals(
+                    history_records, self.instance_id, self.integration_account_id,
+                )
+                logger.info("CaseHistory: %d changes → %d signals", len(history_records), len(signals))
+        except Exception as e:
+            logger.warning("CaseHistory fetch failed (non-fatal): %s", str(e)[:100])
 
         return signals, api_calls
 

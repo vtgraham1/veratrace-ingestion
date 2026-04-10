@@ -1,0 +1,47 @@
+[
+  {
+    "CaseId": "5003V000005WxbQQAS",
+    "CreatedById": "005000000000001",
+    "CreatedBy": {"UserType": "Standard", "Name": "Sarah Chen"},
+    "CreatedDate": "2026-04-08T14:05:00.000+0000",
+    "Field": "Status",
+    "OldValue": "New",
+    "NewValue": "Working"
+  },
+  {
+    "CaseId": "5003V000005WxbQQAS",
+    "CreatedById": "005000000AUTOPROCESS",
+    "CreatedBy": {"UserType": "AutomatedProcess", "Name": "Automated Process"},
+    "CreatedDate": "2026-04-08T14:10:00.000+0000",
+    "Field": "Priority",
+    "OldValue": "Medium",
+    "NewValue": "High"
+  },
+  {
+    "CaseId": "5003V000005WxbQQAS",
+    "CreatedById": "005000000EINSTEIN",
+    "CreatedBy": {"UserType": "AutomatedProcess", "Name": "Einstein Classification Bot"},
+    "CreatedDate": "2026-04-08T14:12:00.000+0000",
+    "Field": "Type",
+    "OldValue": null,
+    "NewValue": "Billing"
+  },
+  {
+    "CaseId": "5003V000005WxbQQAS",
+    "CreatedById": "005000000000001",
+    "CreatedBy": {"UserType": "Standard", "Name": "Sarah Chen"},
+    "CreatedDate": "2026-04-08T16:30:00.000+0000",
+    "Field": "Status",
+    "OldValue": "Working",
+    "NewValue": "Closed"
+  },
+  {
+    "CaseId": "5003V000005WxbQQAS",
+    "CreatedById": "005000000INTEGRATION",
+    "CreatedBy": {"UserType": "Integration", "Name": "Veratrace Sync"},
+    "CreatedDate": "2026-04-08T16:31:00.000+0000",
+    "Field": "Description",
+    "OldValue": null,
+    "NewValue": "Updated by integration"
+  }
+]

@@ -244,3 +244,82 @@ def _parse_sf_timestamp(ts):
 def _get_pii_fields(record):
     """Identify PII fields present in this record."""
     return [f for f in PII_FIELDS if record.get(f)]
+
+
+# ── CaseHistory Attribution ────────────────────────────────────────────────
+
+def map_case_history_to_signals(
+    history_records: list,
+    instance_id: str,
+    integration_account_id: str,
+) -> list:
+    """
+    Transform CaseHistory records into case_field_changed signals
+    with actor attribution (HUMAN vs SYSTEM vs AI).
+
+    This is the core TWU attribution data — every field change on a case
+    is attributed to a specific actor type based on CreatedBy.UserType.
+    """
+    signals = []
+    for record in history_records:
+        case_id = record.get("CaseId", "")
+        created_at = record.get("CreatedDate", "")
+        field_name = record.get("Field", "")
+
+        if not case_id or not field_name:
+            continue
+
+        # Determine who made this change
+        created_by = record.get("CreatedBy", {}) or {}
+        user_type = created_by.get("UserType", "Standard")
+        user_name = created_by.get("Name", "Unknown")
+        created_by_id = record.get("CreatedById", "")
+
+        actor_type, actor_label = _classify_actor(user_type, user_name)
+        is_automation = actor_type in ("SYSTEM", "AI")
+
+        signals.append(TwuSignal(
+            instance_id=instance_id,
+            type="AI" if actor_type == "AI" else "INTEGRATION_EVENT",
+            name="case_field_changed",
+            occurred_at=created_at,
+            source_integration_account_id=integration_account_id,
+            source_integration="salesforce",
+            actor_type=actor_type,
+            actor_agent_id=created_by_id or "unknown",
+            payload={
+                "event": "case_field_changed",
+                "case_id": case_id,
+                "field": field_name,
+                "old_value": record.get("OldValue"),
+                "new_value": record.get("NewValue"),
+                "changed_by_name": user_name,
+                "changed_by_type": user_type,
+                "is_automation": is_automation,
+                "actor_label": actor_label,
+            },
+        ))
+
+    return signals
+
+
+def _classify_actor(user_type, user_name):
+    """
+    Determine if a CaseHistory change was made by a human, automation, or AI.
+
+    Salesforce UserType values:
+      Standard         → human user
+      AutomatedProcess → Flow, Process Builder, Apex trigger
+      Integration      → external system via API
+    """
+    if not user_type:
+        return "HUMAN", user_name or "Unknown"
+
+    if user_type in ("AutomatedProcess", "Integration"):
+        # Check for known AI services
+        name_lower = (user_name or "").lower()
+        if any(kw in name_lower for kw in ("einstein", "agentforce", "copilot", "ai")):
+            return "AI", user_name
+        return "SYSTEM", f"{user_name} ({user_type})"
+
+    return "HUMAN", user_name or "Unknown"

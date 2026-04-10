@@ -10,7 +10,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
 
-from src.connectors.salesforce.signal_mapper import map_records_to_signals
+from src.connectors.salesforce.signal_mapper import map_records_to_signals, map_case_history_to_signals, _classify_actor
 from src.connectors.salesforce.connector import SalesforceConnector
 from src.connectors.salesforce.schema import REQUIRED_FIELDS, EXPECTED_CASE_FIELDS, EXPECTED_OPP_FIELDS
 
@@ -165,6 +165,85 @@ class TestSchema:
         signals = map_records_to_signals(incomplete, "Case", "inst-1", "acc-1")
         # No signals produced since CreatedDate is missing
         assert len(signals) == 0
+
+
+class TestCaseHistoryAttribution:
+    """CaseHistory → signals with human/system/AI classification."""
+
+    @pytest.fixture
+    def history(self):
+        return _load("sample_case_history.json")
+
+    def test_produces_signals_from_history(self, history):
+        signals = map_case_history_to_signals(history, "inst-1", "acc-1")
+        assert len(signals) == 5
+
+    def test_human_change_classified_correctly(self, history):
+        signals = map_case_history_to_signals(history, "inst-1", "acc-1")
+        human_signals = [s for s in signals if s.actor_type == "HUMAN"]
+        assert len(human_signals) == 2  # Sarah Chen made 2 changes
+
+    def test_automation_change_classified_as_system(self, history):
+        signals = map_case_history_to_signals(history, "inst-1", "acc-1")
+        system_signals = [s for s in signals if s.actor_type == "SYSTEM"]
+        assert len(system_signals) == 2  # AutomatedProcess + Integration
+
+    def test_einstein_classified_as_ai(self, history):
+        signals = map_case_history_to_signals(history, "inst-1", "acc-1")
+        ai_signals = [s for s in signals if s.actor_type == "AI"]
+        assert len(ai_signals) == 1
+        assert ai_signals[0].payload["changed_by_name"] == "Einstein Classification Bot"
+
+    def test_field_change_payload_has_old_and_new_values(self, history):
+        signals = map_case_history_to_signals(history, "inst-1", "acc-1")
+        status_change = [s for s in signals if s.payload["field"] == "Status" and s.payload["new_value"] == "Working"][0]
+        assert status_change.payload["old_value"] == "New"
+        assert status_change.payload["new_value"] == "Working"
+
+    def test_is_automation_flag_set(self, history):
+        signals = map_case_history_to_signals(history, "inst-1", "acc-1")
+        for s in signals:
+            if s.actor_type in ("SYSTEM", "AI"):
+                assert s.payload["is_automation"] is True
+            else:
+                assert s.payload["is_automation"] is False
+
+    def test_all_signals_have_case_id(self, history):
+        signals = map_case_history_to_signals(history, "inst-1", "acc-1")
+        for s in signals:
+            assert s.payload["case_id"] == "5003V000005WxbQQAS"
+
+    def test_source_integration_is_salesforce(self, history):
+        signals = map_case_history_to_signals(history, "inst-1", "acc-1")
+        for s in signals:
+            assert s.source_integration == "salesforce"
+
+
+class TestActorClassifier:
+
+    def test_standard_user_is_human(self):
+        actor, label = _classify_actor("Standard", "Sarah Chen")
+        assert actor == "HUMAN"
+
+    def test_automated_process_is_system(self):
+        actor, label = _classify_actor("AutomatedProcess", "Automated Process")
+        assert actor == "SYSTEM"
+
+    def test_integration_user_is_system(self):
+        actor, label = _classify_actor("Integration", "Veratrace Sync")
+        assert actor == "SYSTEM"
+
+    def test_einstein_is_ai(self):
+        actor, label = _classify_actor("AutomatedProcess", "Einstein Classification Bot")
+        assert actor == "AI"
+
+    def test_agentforce_is_ai(self):
+        actor, label = _classify_actor("AutomatedProcess", "Agentforce Case Handler")
+        assert actor == "AI"
+
+    def test_none_user_type_defaults_to_human(self):
+        actor, label = _classify_actor(None, "Some User")
+        assert actor == "HUMAN"
 
 
 class TestAutoDiscovery:
