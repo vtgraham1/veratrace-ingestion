@@ -1,0 +1,14 @@
+{
+  "Id": "0063V000009ABC1QAO",
+  "CreatedDate": "2026-03-15T10:00:00.000+0000",
+  "SystemModstamp": "2026-04-08T14:20:00.000+0000",
+  "Name": "Acme Corp — Enterprise License",
+  "StageName": "Closed Won",
+  "Amount": 125000.0,
+  "CloseDate": "2026-04-08",
+  "IsClosed": true,
+  "IsWon": true,
+  "Probability": 100,
+  "OwnerId": "005000000000003",
+  "AccountId": "001000000000001"
+}

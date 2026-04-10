@@ -1,0 +1,17 @@
+{
+  "Id": "5003V000005WxbQQAS",
+  "CreatedDate": "2026-04-08T14:00:00.000+0000",
+  "SystemModstamp": "2026-04-08T16:30:00.000+0000",
+  "Subject": "Cannot access account — password reset needed",
+  "Status": "Closed",
+  "Priority": "High",
+  "Origin": "Web",
+  "OwnerId": "005000000000001",
+  "IsClosed": true,
+  "ClosedDate": "2026-04-08T16:30:00.000+0000",
+  "Description": "Customer reports being locked out of their account after multiple failed login attempts.",
+  "ContactId": "003000000000001",
+  "AI_Handled__c": "true",
+  "AI_Agent_Name__c": "CaseBot-v3",
+  "AI_Confidence__c": 0.92
+}

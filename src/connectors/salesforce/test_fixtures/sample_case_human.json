@@ -1,0 +1,14 @@
+{
+  "Id": "5003V000005WxbRQAS",
+  "CreatedDate": "2026-04-09T09:00:00.000+0000",
+  "SystemModstamp": "2026-04-09T11:45:00.000+0000",
+  "Subject": "Billing dispute — charge not recognized",
+  "Status": "Closed",
+  "Priority": "Critical",
+  "Origin": "Phone",
+  "OwnerId": "005000000000002",
+  "IsClosed": true,
+  "ClosedDate": "2026-04-09T11:45:00.000+0000",
+  "Description": "Customer disputes a $450 charge from March 15.",
+  "ContactId": "003000000000002"
+}

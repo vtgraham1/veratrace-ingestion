@@ -1,0 +1,7 @@
+{
+  "_comment": "TODO(connector): Replace with a real API response from your vendor. Used in tests to validate signal mapping without hitting the live API.",
+  "id": "sample-001",
+  "created_at": "2026-04-09T10:00:00Z",
+  "updated_at": "2026-04-09T10:05:00Z",
+  "status": "completed"
+}
