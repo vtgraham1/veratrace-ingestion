@@ -1,0 +1,25 @@
+{
+  "type": "conversation",
+  "id": "conv-fin-escalated-001",
+  "created_at": 1712600000,
+  "updated_at": 1712601200,
+  "state": "closed",
+  "open": false,
+  "source": {"type": "messenger"},
+  "contacts": {"contacts": [{"type": "contact", "id": "cust-002", "name": "Jordan Chen", "email": "jordan@example.com"}]},
+  "teammates": [{"type": "admin", "id": "fin-001", "name": "Fin"}, {"type": "admin", "id": "admin-sarah", "name": "Sarah Smith", "email": "sarah@company.com"}],
+  "ai_agent": {
+    "bot": "Fin",
+    "did_resolve": false,
+    "resolution_state": "escalated",
+    "resolution_rating": null
+  },
+  "conversation_parts": {
+    "conversation_parts": [
+      {"type": "conversation_part", "part_type": "comment", "created_at": 1712600010, "author": {"type": "user", "id": "cust-002", "name": "Jordan Chen"}, "body": "I want to dispute a charge"},
+      {"type": "conversation_part", "part_type": "comment", "created_at": 1712600030, "author": {"type": "bot", "id": "fin-001", "name": "Fin"}, "body": "Let me investigate..."},
+      {"type": "conversation_part", "part_type": "assignment", "created_at": 1712600060, "assigned_to": {"type": "admin", "id": "admin-sarah", "name": "Sarah Smith"}},
+      {"type": "conversation_part", "part_type": "comment", "created_at": 1712600600, "author": {"type": "admin", "id": "admin-sarah", "name": "Sarah Smith"}, "body": "I've resolved the dispute..."}
+    ]
+  }
+}

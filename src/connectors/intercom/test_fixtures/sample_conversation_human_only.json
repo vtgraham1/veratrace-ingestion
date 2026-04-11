@@ -1,0 +1,17 @@
+{
+  "type": "conversation",
+  "id": "conv-human-only-001",
+  "created_at": 1712600000,
+  "updated_at": 1712600900,
+  "state": "closed",
+  "open": false,
+  "source": {"type": "email"},
+  "contacts": {"contacts": [{"type": "contact", "id": "cust-003", "name": "Sam Patel", "email": "sam@example.com"}]},
+  "teammates": [{"type": "admin", "id": "admin-marcus", "name": "Marcus Johnson"}],
+  "conversation_parts": {
+    "conversation_parts": [
+      {"type": "conversation_part", "part_type": "comment", "created_at": 1712600010, "author": {"type": "user", "id": "cust-003", "name": "Sam Patel"}, "body": "Need help with compliance docs"},
+      {"type": "conversation_part", "part_type": "comment", "created_at": 1712600300, "author": {"type": "admin", "id": "admin-marcus", "name": "Marcus Johnson"}, "body": "I'll get those docs for you..."}
+    ]
+  }
+}

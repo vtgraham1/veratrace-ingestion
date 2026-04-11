@@ -1,0 +1,24 @@
+{
+  "type": "conversation",
+  "id": "conv-fin-resolved-001",
+  "created_at": 1712600000,
+  "updated_at": 1712600300,
+  "state": "closed",
+  "open": false,
+  "source": {"type": "messenger"},
+  "contacts": {"contacts": [{"type": "contact", "id": "cust-001", "name": "Alex Rivera", "email": "alex@example.com"}]},
+  "teammates": [{"type": "admin", "id": "fin-001", "name": "Fin"}],
+  "ai_agent": {
+    "bot": "Fin",
+    "did_resolve": true,
+    "resolution_state": "resolved",
+    "resolution_rating": {"rating": 5, "remark": "Very helpful"},
+    "content_sources": ["KB Article #123", "FAQ #456"]
+  },
+  "conversation_parts": {
+    "conversation_parts": [
+      {"type": "conversation_part", "part_type": "comment", "created_at": 1712600010, "author": {"type": "user", "id": "cust-001", "name": "Alex Rivera"}, "body": "How do I reset my password?"},
+      {"type": "conversation_part", "part_type": "comment", "created_at": 1712600020, "author": {"type": "bot", "id": "fin-001", "name": "Fin"}, "body": "Here's how to reset your password..."}
+    ]
+  }
+}
