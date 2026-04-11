@@ -107,6 +107,18 @@ def main():
             parser.error("INTERCOM_ACCESS_TOKEN env var required for Intercom warming")
         credentials = {"accessToken": ic_token}
         external_identity = {"tenantId": "intercom-workspace"}
+    elif args.platform == "servicenow":
+        snow_url = os.environ.get("SNOW_INSTANCE_URL", "")
+        snow_client_id = os.environ.get("SNOW_CLIENT_ID", "")
+        snow_client_secret = os.environ.get("SNOW_CLIENT_SECRET", "")
+        if not snow_url or not snow_client_id or not snow_client_secret:
+            parser.error("SNOW_INSTANCE_URL, SNOW_CLIENT_ID, SNOW_CLIENT_SECRET env vars required for ServiceNow warming")
+        credentials = {
+            "instance_url": snow_url,
+            "client_id": snow_client_id,
+            "client_secret": snow_client_secret,
+        }
+        external_identity = {"tenantId": snow_url}
     else:
         # Amazon Connect (default)
         if not args.role_arn or not args.instance_arn:
