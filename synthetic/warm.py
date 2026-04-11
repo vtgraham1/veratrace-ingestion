@@ -93,15 +93,22 @@ def main():
     if not args.platform:
         parser.error("--platform is required")
 
-    if not args.role_arn or not args.instance_arn:
-        parser.error("--role-arn and --instance-arn are required (or set WARM_ROLE_ARN / WARM_INSTANCE_ARN)")
-
-    # Build credentials
-    credentials = {"roleArn": args.role_arn}
-    if args.external_id:
-        credentials["externalId"] = args.external_id
-
-    external_identity = {"tenantId": args.instance_arn}
+    # Build credentials based on platform
+    if args.platform == "salesforce":
+        sf_token = os.environ.get("SF_ACCESS_TOKEN", "")
+        sf_instance = os.environ.get("SF_INSTANCE_URL", "")
+        if not sf_token or not sf_instance:
+            parser.error("SF_ACCESS_TOKEN and SF_INSTANCE_URL env vars required for Salesforce warming")
+        credentials = {"access_token": sf_token, "instance_url": sf_instance}
+        external_identity = {"tenantId": sf_instance}
+    else:
+        # Amazon Connect (default)
+        if not args.role_arn or not args.instance_arn:
+            parser.error("--role-arn and --instance-arn are required (or set WARM_ROLE_ARN / WARM_INSTANCE_ARN)")
+        credentials = {"roleArn": args.role_arn}
+        if args.external_id:
+            credentials["externalId"] = args.external_id
+        external_identity = {"tenantId": args.instance_arn}
 
     # Create warmer
     WarmerClass = WARMERS[args.platform]
