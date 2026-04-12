@@ -72,6 +72,9 @@ def sync_account(account, backfill=False):
     if isinstance(external_identity, str):
         external_identity = json.loads(external_identity)
 
+    logger.info("Instantiating %s connector for account %s (cred_keys=%s, identity_keys=%s)",
+                integration_id, account_id[:8], list(credentials.keys()), list(external_identity.keys()))
+
     connector = connector_cls(
         instance_id=instance_id,
         integration_account_id=account_id,
@@ -81,7 +84,8 @@ def sync_account(account, backfill=False):
 
     # Validate credentials first
     if not connector.validate_credentials():
-        logger.error("Invalid credentials for account %s, skipping", account_id[:8])
+        logger.error("Invalid credentials for account %s (keys present: %s), skipping",
+                     account_id[:8], list(credentials.keys()))
         return
 
     stream = f"{integration_id}:contacts"

@@ -20,6 +20,7 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from src.sync.scheduler import sync_account, fetch_active_accounts
+from src.connectors import CONNECTOR_MAP
 from src.config import SUPABASE_URL
 
 INGESTION_API_KEY = os.environ.get("INGESTION_API_KEY", "")
@@ -131,38 +132,54 @@ class IngestionHandler(BaseHTTPRequestHandler):
             self._json_response(500, {"status": "error", "message": str(e)[:200]})
 
     def _handle_test_connection(self):
-        """Test AWS credentials by assuming the role and calling DescribeInstance."""
+        """Test credentials for any registered connector type."""
         try:
             length = int(self.headers.get("Content-Length", 0))
             body = json.loads(self.rfile.read(length)) if length > 0 else {}
 
-            role_arn = body.get("roleArn", "")
-            instance_arn = body.get("instanceArn", "")
-            external_id = body.get("externalId", "")
-            region = body.get("region", "us-east-1")
+            integration_id = body.get("integrationId", "")
+            credentials = body.get("credentials", {})
+            external_identity = body.get("externalIdentity", {})
 
-            if not role_arn or not instance_arn:
-                self._json_response(400, {"error": "roleArn and instanceArn required"})
+            # Backwards compat: if no integrationId, assume amazon-connect (legacy format)
+            if not integration_id:
+                integration_id = "amazon-connect"
+                credentials = {
+                    "roleArn": body.get("roleArn", ""),
+                    "externalId": body.get("externalId", ""),
+                }
+                external_identity = {"tenantId": body.get("instanceArn", "")}
+
+            connector_cls = CONNECTOR_MAP.get(integration_id)
+            if not connector_cls:
+                self._json_response(400, {
+                    "error": f"Unknown integration: {integration_id}",
+                    "available": list(CONNECTOR_MAP.keys()),
+                })
                 return
 
-            from src.connectors.amazon_connect.connector import AmazonConnectConnector
+            if not credentials:
+                self._json_response(400, {"error": "credentials required"})
+                return
 
-            connector = AmazonConnectConnector(
+            logger.info("Test connection: %s (keys: %s)", integration_id, list(credentials.keys()))
+
+            connector = connector_cls(
                 integration_account_id="test",
                 instance_id="test",
-                credentials={"roleArn": role_arn, "externalId": external_id},
-                external_identity={"tenantId": instance_arn},
+                credentials=credentials,
+                external_identity=external_identity,
             )
             result = connector.test_connection()
             self._json_response(200, {
                 "success": result.success,
                 "message": result.message,
-                "region": result.region,
+                "region": getattr(result, "region", ""),
                 "details": getattr(result, "details", None),
             })
 
         except Exception as e:
-            logger.error("Test connection failed: %s", str(e)[:200])
+            logger.error("Test connection failed (%s): %s", body.get("integrationId", "?"), str(e)[:200])
             self._json_response(500, {"success": False, "message": str(e)[:200]})
 
     def _handle_sync(self):
