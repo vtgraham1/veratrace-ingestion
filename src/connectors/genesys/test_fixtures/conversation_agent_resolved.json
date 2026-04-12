@@ -1,0 +1,48 @@
+{
+    "conversationId": "conv-agent-001",
+    "conversationStart": "2026-04-10T15:00:00.000Z",
+    "conversationEnd": "2026-04-10T15:12:00.000Z",
+    "originatingDirection": "inbound",
+    "divisionIds": ["div-001"],
+    "participants": [
+        {
+            "participantId": "cust-002",
+            "participantName": "Alex Johnson",
+            "purpose": "customer",
+            "sessions": [
+                {
+                    "mediaType": "voice",
+                    "segments": [
+                        {"segmentType": "interact", "segmentStart": "2026-04-10T15:00:00.000Z", "segmentEnd": "2026-04-10T15:12:00.000Z"}
+                    ]
+                }
+            ]
+        },
+        {
+            "participantId": "acd-001",
+            "participantName": "Support Queue",
+            "purpose": "acd",
+            "sessions": [
+                {
+                    "mediaType": "voice",
+                    "segments": [
+                        {"segmentType": "interact", "segmentStart": "2026-04-10T15:00:00.000Z", "segmentEnd": "2026-04-10T15:00:30.000Z"}
+                    ]
+                }
+            ]
+        },
+        {
+            "participantId": "agent-001",
+            "participantName": "Mike Chen",
+            "purpose": "agent",
+            "sessions": [
+                {
+                    "mediaType": "voice",
+                    "segments": [
+                        {"segmentType": "interact", "segmentStart": "2026-04-10T15:00:30.000Z", "segmentEnd": "2026-04-10T15:12:00.000Z"}
+                    ]
+                }
+            ]
+        }
+    ]
+}

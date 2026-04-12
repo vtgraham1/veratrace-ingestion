@@ -1,0 +1,35 @@
+{
+    "conversationId": "conv-bot-001",
+    "conversationStart": "2026-04-10T14:00:00.000Z",
+    "conversationEnd": "2026-04-10T14:03:00.000Z",
+    "originatingDirection": "inbound",
+    "divisionIds": ["div-001"],
+    "participants": [
+        {
+            "participantId": "cust-001",
+            "participantName": "Jane Smith",
+            "purpose": "customer",
+            "sessions": [
+                {
+                    "mediaType": "chat",
+                    "segments": [
+                        {"segmentType": "interact", "segmentStart": "2026-04-10T14:00:00.000Z", "segmentEnd": "2026-04-10T14:03:00.000Z"}
+                    ]
+                }
+            ]
+        },
+        {
+            "participantId": "bot-001",
+            "participantName": "Support Bot",
+            "purpose": "bot",
+            "sessions": [
+                {
+                    "mediaType": "chat",
+                    "segments": [
+                        {"segmentType": "interact", "segmentStart": "2026-04-10T14:00:05.000Z", "segmentEnd": "2026-04-10T14:03:00.000Z"}
+                    ]
+                }
+            ]
+        }
+    ]
+}

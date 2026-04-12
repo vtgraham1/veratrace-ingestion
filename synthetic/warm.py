@@ -119,6 +119,18 @@ def main():
             "client_secret": snow_client_secret,
         }
         external_identity = {"tenantId": snow_url}
+    elif args.platform == "genesys":
+        gc_region = os.environ.get("GENESYS_REGION", "us-east-1")
+        gc_client_id = os.environ.get("GENESYS_CLIENT_ID", "")
+        gc_client_secret = os.environ.get("GENESYS_CLIENT_SECRET", "")
+        if not gc_client_id or not gc_client_secret:
+            parser.error("GENESYS_CLIENT_ID, GENESYS_CLIENT_SECRET env vars required for Genesys warming")
+        credentials = {
+            "client_id": gc_client_id,
+            "client_secret": gc_client_secret,
+            "region": gc_region,
+        }
+        external_identity = {"tenantId": gc_region}
     else:
         # Amazon Connect (default)
         if not args.role_arn or not args.instance_arn:
