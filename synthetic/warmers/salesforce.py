@@ -188,18 +188,21 @@ class SalesforceWarmer(BaseWarmer):
             return False
 
     def create_activity(self, scenario_config):
+        # Use our weighted scenarios if caller passes generic config
         scenario = random.choices(CASE_SCENARIOS, weights=_SCENARIO_WEIGHTS, k=1)[0]
         customer = random.choice(CUSTOMER_NAMES)
 
+        # Step 1: Create case in "New" status (generates CaseHistory entry)
         case_data = {
             "Subject": f"{scenario['subject']} — {customer}",
             "Description": scenario["description"],
             "Origin": scenario["origin"],
             "Priority": scenario["priority"],
-            "Status": scenario["status"],
+            "Status": "New",
         }
 
         # Add AI fields if the scenario involves AI
+        ai_fields_available = True
         if scenario.get("ai_handled") == "true":
             case_data["AI_Handled__c"] = "true"
             case_data["AI_Agent_Name__c"] = scenario.get("ai_agent", "")
@@ -207,18 +210,53 @@ class SalesforceWarmer(BaseWarmer):
 
         try:
             result = self._api_post(f"/services/data/{SF_API_VERSION}/sobjects/Case", case_data)
-            case_id = result.get("id", "")
-            return {"id": case_id, "type": "Case", "customer": customer, "scenario": scenario["subject"]}
         except urllib.error.HTTPError as e:
             body = e.read().decode()
-            # Custom fields might not exist — retry without AI fields
             if "AI_Handled__c" in body or "INVALID_FIELD" in body:
                 logger.warning("AI custom fields not found — creating without AI attribution")
+                ai_fields_available = False
                 for key in ["AI_Handled__c", "AI_Agent_Name__c", "AI_Confidence__c"]:
                     case_data.pop(key, None)
                 result = self._api_post(f"/services/data/{SF_API_VERSION}/sobjects/Case", case_data)
-                return {"id": result.get("id", ""), "type": "Case", "customer": customer, "scenario": scenario["subject"]}
-            raise
+            else:
+                raise
+
+        case_id = result.get("id", "")
+        if not case_id:
+            raise RuntimeError("No case ID returned")
+
+        # Step 2: Add a CaseComment (creates CaseHistory + FeedItem)
+        try:
+            comment = scenario["description"]
+            if scenario.get("ai_handled") == "true":
+                comment = f"[{scenario.get('ai_agent', 'AI')}] {comment}"
+            self._api_post(
+                f"/services/data/{SF_API_VERSION}/sobjects/CaseComment",
+                {"ParentId": case_id, "CommentBody": comment, "IsPublished": False},
+            )
+        except Exception as e:
+            logger.debug("CaseComment failed (non-fatal): %s", str(e)[:80])
+
+        # Step 3: Transition to "Working" (creates CaseHistory status change)
+        try:
+            self._api_patch(
+                f"/services/data/{SF_API_VERSION}/sobjects/Case/{case_id}",
+                {"Status": "Working"},
+            )
+        except Exception as e:
+            logger.debug("Status→Working failed: %s", str(e)[:50])
+
+        # Step 4: Close the case (creates final CaseHistory entry with resolution)
+        if scenario.get("status") == "Closed":
+            try:
+                self._api_patch(
+                    f"/services/data/{SF_API_VERSION}/sobjects/Case/{case_id}",
+                    {"Status": "Closed"},
+                )
+            except Exception as e:
+                logger.debug("Status→Closed failed: %s", str(e)[:50])
+
+        return {"id": case_id, "type": "Case", "customer": customer, "scenario": scenario["subject"]}
 
     def verify_activity(self, activity_id):
         try:
@@ -234,6 +272,15 @@ class SalesforceWarmer(BaseWarmer):
         req.add_header("Accept", "application/json")
         with urllib.request.urlopen(req, timeout=30) as resp:
             return json.loads(resp.read())
+
+    def _api_patch(self, path, body):
+        url = f"{self._instance_url}{path}"
+        data = json.dumps(body).encode()
+        req = urllib.request.Request(url, data=data, method="PATCH")
+        req.add_header("Authorization", f"Bearer {self._access_token}")
+        req.add_header("Content-Type", "application/json")
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            resp.read()  # PATCH returns 204 No Content
 
     def _api_post(self, path, body):
         url = f"{self._instance_url}{path}"
