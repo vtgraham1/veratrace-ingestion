@@ -12,10 +12,14 @@ The boundary is the `twu_signals` table and the `POST /instances/{id}/tasks` tri
 
 | Connector | Auth | Polling | Status |
 |-----------|------|---------|--------|
-| Amazon Connect | IAM AssumeRole + ExternalId | SearchContacts API (15 min) | **Live** |
-| Salesforce | OAuth 2.0 | SOQL + CaseHistory (15 min) | **Built** (OAuth pending backend PR) |
-| Zendesk | OAuth 2.0 / API token | Webhooks + Incremental Export | Planned |
-| OpenAI / Anthropic | Proxy / SDK wrapper | Per request | Planned |
+| Amazon Connect | IAM AssumeRole + ExternalId | SearchContacts API (15 min) | **Live** — warmer running |
+| Salesforce | OAuth 2.0 (refresh token) | SOQL + CaseHistory (15 min) | **Live** — warmer running |
+| Intercom | API token (Bearer) | Search API + conversation parts (15 min) | **Live** — warmer running |
+| ServiceNow | OAuth 2.0 (client credentials) | Table API + sys_audit (15 min) | **Built** — sandbox pending |
+| Genesys Cloud | OAuth 2.0 (client credentials) | Analytics API (15 min) | Coming Soon |
+| Freshdesk | API key | List Tickets API (15 min) | Coming Soon |
+| AWS Bedrock | IAM AssumeRole | CloudWatch Logs (15 min) | Coming Soon |
+| HubSpot | OAuth 2.0 | Conversations API (15 min) | Coming Soon |
 
 New connectors auto-register — see [CONTRIBUTING.md](CONTRIBUTING.md).
 
@@ -60,14 +64,20 @@ Cases produce 2-4 signals + CaseHistory attribution signals:
 
 ## Deployment
 
-Deployed to DigitalOcean via **veraagents** GitHub Actions. This repo's CI runs unit tests only.
+Deployed to DigitalOcean (`159.203.133.76`) via **veraagents** GitHub Actions (`push` to `main` triggers deploy). API managed by systemd (user-level unit, auto-restarts on crash). Deploy includes health check — fails if API doesn't respond within 10s.
+
+**GitHub org:** [Veratrace-AI](https://github.com/Veratrace-AI) (repos transferred 2026-04-12)
+
+**Control plane:** `https://api.veratrace.app` (staging: `api-staging.veratrace.app`) — Joey's Spring Boot backend on AWS.
 
 | Service | Schedule | What |
 |---------|----------|------|
-| Ingestion sync | Every 15 min weekdays | Pull CTRs from vendor APIs |
-| Sandbox warming | Every hour weekdays | Create real contacts in Connect sandbox |
+| Ingestion sync | Every 15 min weekdays | Pull records from vendor APIs |
+| Connect warming | Hourly weekdays | 5 contacts/hour in Connect sandbox |
+| Salesforce warming | Hourly weekdays | 3 cases/hour in SF sandbox |
+| Intercom warming | Hourly weekdays | 3 conversations/hour in IC workspace |
 | Contract tests | Nightly | Validate against live vendor APIs |
-| API server | Always running | HTTP API on port 8090 |
+| API server | Always (systemd) | HTTP API on port 8090, Caddy TLS on 443 |
 
 ## Sandbox Warming
 
@@ -91,11 +101,11 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) — 6-step guide. Template at `src/connec
 
 ```bash
 pip install boto3 pytest
-python -m pytest tests/ -v                    # Unit tests (97 tests)
+python -m pytest tests/ -v                    # Unit tests (202 tests)
 python -m pytest tests/contract/ --contract   # Live API contract tests (6 tests)
 ```
 
-**144 tests** across 9 files:
+**202 tests** across 11 files:
 
 | File | Tests | What |
 |------|-------|------|
@@ -103,7 +113,9 @@ python -m pytest tests/contract/ --contract   # Live API contract tests (6 tests
 | `test_signal_mapper_ai.py` | 23 | Lex bot, Contact Lens, structured attributes |
 | `test_api_auth.py` | 6 | API key enforcement |
 | `test_synthetic_shapes.py` | 16 | JSONB contract against Java entity models |
-| `test_salesforce.py` | 36 | Case/Opp mapping, CaseHistory attribution, actor classifier, config |
+| `test_salesforce.py` | 36 | Case/Opp mapping, CaseHistory attribution, actor classifier |
+| `test_intercom.py` | 38 | Fin attribution, conversation signals, escalation |
+| `test_servicenow.py` | 36 | Incident signals, Virtual Agent classification, sys_audit |
 | `test_warmers.py` | 18 | Connect warmer behavior + scenario distribution |
 | `test_warmers_salesforce.py` | 11 | Salesforce warmer scenarios + distribution |
 | `test_platform.py` | 17 | Auto-discovery, CONFIG, rate limiter, audit log |
