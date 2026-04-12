@@ -13,7 +13,7 @@ SUPABASE_SERVICE_ROLE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
 # ── Control Plane ──────────────────────────────────────────────────────────────
 
 CONTROL_PLANE_URL = os.environ.get(
-    "CONTROL_PLANE_URL", "https://veratrace-control-plane.onrender.com"
+    "CONTROL_PLANE_URL", "https://api.veratrace.app"
 )
 
 # ── Vendor API Keys (per-connector, loaded on demand) ──────────────────────────
