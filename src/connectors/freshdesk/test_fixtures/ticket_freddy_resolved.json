@@ -1,0 +1,21 @@
+{
+    "id": 1001,
+    "subject": "How do I reset my password?",
+    "description": "I forgot my password and need to reset it",
+    "status": 4,
+    "priority": 2,
+    "source": 7,
+    "type": "Question",
+    "responder_id": 9001,
+    "group_id": 101,
+    "requester_id": 5001,
+    "created_at": "2026-04-10T14:00:00Z",
+    "updated_at": "2026-04-10T14:02:00Z",
+    "due_by": "2026-04-10T18:00:00Z",
+    "fr_due_by": "2026-04-10T15:00:00Z",
+    "tags": ["password", "self-service"],
+    "stats": {
+        "resolved_at": "2026-04-10T14:02:00Z",
+        "first_responded_at": "2026-04-10T14:00:30Z"
+    }
+}

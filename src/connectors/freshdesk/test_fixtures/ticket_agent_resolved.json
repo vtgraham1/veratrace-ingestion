@@ -1,0 +1,21 @@
+{
+    "id": 1002,
+    "subject": "Production database connection timeout",
+    "description": "Our production database is timing out on all queries since 9am",
+    "status": 5,
+    "priority": 4,
+    "source": 3,
+    "type": "Incident",
+    "responder_id": 9002,
+    "group_id": 102,
+    "requester_id": 5002,
+    "created_at": "2026-04-09T14:30:00Z",
+    "updated_at": "2026-04-10T10:15:00Z",
+    "due_by": "2026-04-09T15:30:00Z",
+    "fr_due_by": "2026-04-09T14:45:00Z",
+    "tags": ["database", "p1", "production"],
+    "stats": {
+        "resolved_at": "2026-04-10T10:15:00Z",
+        "first_responded_at": "2026-04-09T14:35:00Z"
+    }
+}

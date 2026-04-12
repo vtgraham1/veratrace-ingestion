@@ -125,6 +125,16 @@ def main():
             "client_secret": snow_client_secret,
         }
         external_identity = {"tenantId": snow_url}
+    elif args.platform == "freshdesk":
+        fd_domain = os.environ.get("FRESHDESK_DOMAIN", "")
+        fd_api_key = os.environ.get("FRESHDESK_API_KEY", "")
+        if not fd_domain or not fd_api_key:
+            parser.error("FRESHDESK_DOMAIN, FRESHDESK_API_KEY env vars required for Freshdesk warming")
+        credentials = {
+            "api_key": fd_api_key,
+            "domain": fd_domain,
+        }
+        external_identity = {"tenantId": fd_domain}
     elif args.platform == "genesys":
         gc_region = os.environ.get("GENESYS_REGION", "us-east-1")
         gc_client_id = os.environ.get("GENESYS_CLIENT_ID", "")
