@@ -7,7 +7,7 @@ dependencies = ["boto3>=1.35"]
 
 [project.optional-dependencies]
 dev = ["pytest", "ruff"]
-seed = ["psycopg2-binary>=2.9"]
+seed = ["psycopg2-binary>=2.9.11"]
 
 [tool.ruff]
 line-length = 120
