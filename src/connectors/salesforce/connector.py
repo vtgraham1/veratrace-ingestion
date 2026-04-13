@@ -264,9 +264,13 @@ class SalesforceConnector(BaseConnector):
         except urllib.error.HTTPError as e:
             if e.code == 401:
                 # Token expired — try refresh
-                logger.info("Token expired, refreshing...")
-                self._refresh_access_token()
-                # Retry once
+                logger.info("Token expired, attempting refresh...")
+                try:
+                    self._refresh_access_token()
+                except RuntimeError as refresh_err:
+                    logger.error("Token refresh unavailable: %s — sync will fail until re-authed", refresh_err)
+                    raise e from refresh_err
+                # Retry once with new token
                 req.remove_header("Authorization")
                 req.add_header("Authorization", f"Bearer {self._access_token}")
                 with urllib.request.urlopen(req, timeout=30) as resp:
@@ -274,10 +278,22 @@ class SalesforceConnector(BaseConnector):
             raise
 
     def _refresh_access_token(self):
-        """Refresh the OAuth access token. Thread-safe."""
+        """Refresh the OAuth access token. Thread-safe.
+
+        Requires client_id and client_secret in credentials. If the control
+        plane provided tokens without these (OAuth callback flow), refresh
+        is not possible — the sync will work with the initial access token
+        but fail after it expires (~1-2 hours).
+        """
         with self._token_lock:
             if not self._refresh_token:
                 raise RuntimeError("No refresh token available")
+            if not self._client_id or not self._client_secret:
+                raise RuntimeError(
+                    "Token refresh requires client_id and client_secret in credentials. "
+                    "Ask the control plane to include these in auth_credentials, or add a "
+                    "server-side refresh endpoint."
+                )
 
             data = urllib.parse.urlencode({
                 "grant_type": "refresh_token",
