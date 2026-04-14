@@ -17,7 +17,11 @@ import argparse
 import json
 import logging
 import os
+import re
 import sys
+import urllib.error
+import urllib.parse
+import urllib.request
 import urllib.request
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -99,8 +103,43 @@ def main():
         sf_instance = os.environ.get("SF_INSTANCE_URL", "")
         sf_client_id = os.environ.get("SF_CLIENT_ID", "")
         sf_client_secret = os.environ.get("SF_CLIENT_SECRET", "")
+        sf_refresh_token = os.environ.get("SF_REFRESH_TOKEN", "")
         if not sf_token or not sf_instance:
             parser.error("SF_ACCESS_TOKEN and SF_INSTANCE_URL env vars required for Salesforce warming")
+
+        # Pre-flight: check if token is still valid, refresh if expired
+        try:
+            _req = urllib.request.Request(f"{sf_instance}/services/data/v59.0/")
+            _req.add_header("Authorization", f"Bearer {sf_token}")
+            urllib.request.urlopen(_req, timeout=10)
+        except urllib.error.HTTPError as e:
+            if e.code == 401 and sf_client_id and sf_client_secret and sf_refresh_token:
+                print("  SF token expired — refreshing via OAuth...")
+                try:
+                    _data = urllib.parse.urlencode({
+                        "grant_type": "refresh_token",
+                        "client_id": sf_client_id,
+                        "client_secret": sf_client_secret,
+                        "refresh_token": sf_refresh_token,
+                    }).encode()
+                    _req2 = urllib.request.Request(f"{sf_instance}/services/oauth2/token", data=_data, method="POST")
+                    with urllib.request.urlopen(_req2, timeout=15) as _r:
+                        _resp = json.loads(_r.read())
+                    sf_token = _resp["access_token"]
+                    print(f"  Token refreshed successfully")
+                    # Persist to .env so subsequent cron runs use the new token
+                    _env_path = os.path.expanduser("~/veratrace-ingestion/.env")
+                    if os.path.exists(_env_path):
+                        _env = open(_env_path).read()
+                        _env = re.sub(r'SF_ACCESS_TOKEN=.*', f'SF_ACCESS_TOKEN={sf_token}', _env)
+                        open(_env_path, "w").write(_env)
+                except Exception as _re:
+                    print(f"  Token refresh failed: {_re}")
+            elif e.code == 401:
+                print(f"  SF token expired — no refresh_token available, warming will fail")
+        except Exception:
+            pass  # Network issue — proceed and let the warmer report the error
+
         credentials = {
             "access_token": sf_token,
             "instance_url": sf_instance,
