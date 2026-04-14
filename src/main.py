@@ -10,10 +10,13 @@ Usage:
   python3 -m src.main --port 8091        # custom port
 """
 import datetime
+import hashlib
+import hmac
 import json
 import logging
 import os
 import sys
+import urllib.request
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 # Add project root to path
@@ -99,6 +102,8 @@ class IngestionHandler(BaseHTTPRequestHandler):
             self._json_response(200, {"status": "ok", "supabase": bool(SUPABASE_URL)})
         elif self.path == "/health/warming":
             self._handle_warming_health()
+        elif self.path.startswith("/blog/approve"):
+            self._handle_blog_approve()
         else:
             self._json_response(404, {"error": "Not found"})
 
@@ -223,6 +228,59 @@ class IngestionHandler(BaseHTTPRequestHandler):
         except Exception as e:
             logger.error("Sync request failed: %s", str(e)[:200])
             self._json_response(500, {"error": str(e)[:200]})
+
+    def _handle_blog_approve(self):
+        """One-click blog post approval via HMAC-signed URL."""
+        from urllib.parse import urlparse, parse_qs
+        params = parse_qs(urlparse(self.path).query)
+        slug = params.get("slug", [""])[0]
+        token = params.get("token", [""])[0]
+
+        if not slug or not token:
+            self._html_response(400, "Missing slug or token.")
+            return
+
+        # Verify HMAC token (signed with INGESTION_API_KEY as secret)
+        expected = hmac.new(INGESTION_API_KEY.encode(), slug.encode(), hashlib.sha256).hexdigest()[:16]
+        if not hmac.compare_digest(token, expected):
+            self._html_response(403, "Invalid or expired approval link.")
+            return
+
+        # Update post status in Supabase
+        supabase_key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
+        if not SUPABASE_URL or not supabase_key:
+            self._html_response(500, "Supabase not configured.")
+            return
+
+        try:
+            patch_url = f"{SUPABASE_URL}/rest/v1/blog_posts?slug=eq.{slug}&status=eq.draft"
+            patch_data = json.dumps({"status": "approved"}).encode()
+            req = urllib.request.Request(patch_url, data=patch_data, method="PATCH")
+            req.add_header("apikey", supabase_key)
+            req.add_header("Authorization", f"Bearer {supabase_key}")
+            req.add_header("Content-Type", "application/json")
+            req.add_header("Prefer", "return=minimal")
+            with urllib.request.urlopen(req, timeout=10) as r:
+                pass
+            logger.info("Blog post approved: %s", slug)
+            self._html_response(200,
+                f"<h2>Approved: {slug}</h2>"
+                f"<p>This post will be published on the next publish cycle (weekdays 1pm EDT).</p>"
+                f'<p><a href="https://veratrace.ai/blog/{slug}">Preview →</a></p>'
+            )
+        except Exception as e:
+            logger.error("Blog approve failed (%s): %s", slug, str(e)[:200])
+            self._html_response(500, f"Failed to approve: {str(e)[:100]}")
+
+    def _html_response(self, status, body_html):
+        self.send_response(status)
+        self._cors_headers()
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.end_headers()
+        html = f"""<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Veratrace Blog</title>
+        <style>body{{font-family:-apple-system,sans-serif;max-width:500px;margin:60px auto;padding:20px;color:#1a1a1a;}}</style>
+        </head><body>{body_html}</body></html>"""
+        self.wfile.write(html.encode())
 
     def _json_response(self, status, body):
         self.send_response(status)
