@@ -253,18 +253,40 @@ class IngestionHandler(BaseHTTPRequestHandler):
             return
 
         try:
-            patch_url = f"{SUPABASE_URL}/rest/v1/blog_posts?slug=eq.{slug}&status=eq.draft"
-            patch_data = json.dumps({"status": "approved"}).encode()
-            req = urllib.request.Request(patch_url, data=patch_data, method="PATCH")
+            # Look up post title from Supabase
+            lookup_url = f"{SUPABASE_URL}/rest/v1/blog_posts?slug=eq.{slug}&select=id,title,status"
+            req = urllib.request.Request(lookup_url, method="GET")
             req.add_header("apikey", supabase_key)
             req.add_header("Authorization", f"Bearer {supabase_key}")
-            req.add_header("Content-Type", "application/json")
-            req.add_header("Prefer", "return=minimal")
             with urllib.request.urlopen(req, timeout=10) as r:
-                pass
-            logger.info("Blog post approved: %s", slug)
+                posts = json.loads(r.read())
+            if not posts:
+                self._html_response(404, f"<h2>Post not found: {slug}</h2>")
+                return
+            post = posts[0]
+            if post.get("status") != "draft":
+                self._html_response(200,
+                    f"<h2>Already {post.get('status', 'processed')}: {slug}</h2>"
+                    f'<p><a href="https://veratrace.ai/blog/{slug}">View →</a></p>'
+                )
+                return
+
+            # Write approved_publish event to pipeline log (same format as pipeline.py)
+            log_file = "/opt/veraagents/blog/memory/blog_pipeline_log.jsonl"
+            record = {
+                "ts": datetime.datetime.utcnow().isoformat() + "Z",
+                "event": "approved_publish",
+                "slug": slug,
+                "title": post.get("title", ""),
+                "metadata": {"post_id": slug, "approved_via": "email_link"},
+            }
+            os.makedirs(os.path.dirname(log_file), exist_ok=True)
+            with open(log_file, "a") as f:
+                f.write(json.dumps(record) + "\n")
+
+            logger.info("Blog post approved via email link: %s", slug)
             self._html_response(200,
-                f"<h2>Approved: {slug}</h2>"
+                f"<h2>Approved: {post.get('title', slug)}</h2>"
                 f"<p>This post will be published on the next publish cycle (weekdays 1pm EDT).</p>"
                 f'<p><a href="https://veratrace.ai/blog/{slug}">Preview →</a></p>'
             )
