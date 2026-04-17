@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import sys
+import urllib.error
 import urllib.request
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
@@ -24,7 +25,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from src.sync.scheduler import sync_account, fetch_active_accounts
 from src.connectors import CONNECTOR_MAP
-from src.config import SUPABASE_URL
+from src.config import SUPABASE_URL, CONTROL_PLANE_URL
 
 INGESTION_API_KEY = os.environ.get("INGESTION_API_KEY", "")
 
@@ -110,8 +111,166 @@ class IngestionHandler(BaseHTTPRequestHandler):
         elif self.path.startswith("/blog/approve"):
             # /blog/approve has its own HMAC auth — no API key needed
             self._handle_blog_approve()
+        elif self.path.startswith("/stats/instances/"):
+            self._audit_log("GET", self.path)
+            self._route_stats()
         else:
             self._json_response(404, {"error": "Not found"})
+
+    def _route_stats(self):
+        """Route /stats/instances/{id}/... to the right handler.
+
+        Paths:
+          /stats/instances/{INST}/accounts
+          /stats/instances/{INST}/accounts/{AID}/operations
+        """
+        path = self.path.split("?", 1)[0]  # strip query string
+        parts = path.strip("/").split("/")
+        # ["stats", "instances", INST, "accounts"]                   (len 4)
+        # ["stats", "instances", INST, "accounts", AID, "operations"] (len 6)
+        if len(parts) == 4 and parts[3] == "accounts":
+            self._handle_stats_accounts(parts[2])
+        elif len(parts) == 6 and parts[3] == "accounts" and parts[5] == "operations":
+            self._handle_stats_operations(parts[2], parts[4])
+        else:
+            self._json_response(404, {"error": "Not found"})
+
+    # ── Stats auth + helpers ──────────────────────────────────────────────────
+
+    def _auth_via_control_plane(self, instance_id):
+        """Validate JWT AND verify instance membership by forwarding to Joey's API.
+
+        Returns (status_code, accounts_list_or_error_msg).
+        - (200, [accounts]) → user authenticated + is a member of instance
+        - (401, msg)        → no/invalid JWT
+        - (403, msg)        → valid JWT but not a member
+        - (5xx, msg)        → control plane unreachable or erroring
+        """
+        auth_header = self.headers.get("Authorization", "")
+        if not auth_header.startswith("Bearer "):
+            return 401, "Missing Authorization: Bearer header"
+
+        url = f"{CONTROL_PLANE_URL}/instances/{instance_id}/integration-accounts"
+        req = urllib.request.Request(url, headers={"Authorization": auth_header})
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                return 200, json.loads(resp.read())
+        except urllib.error.HTTPError as e:
+            body = e.read()[:300].decode("utf-8", "replace") if e.fp else ""
+            if e.code in (401, 403):
+                return e.code, body or "access denied"
+            logger.error("Control plane returned %d for instance %s: %s", e.code, instance_id[:8], body)
+            return 502, f"Control plane error: HTTP {e.code}"
+        except urllib.error.URLError as e:
+            logger.error("Control plane unreachable: %s", e)
+            return 503, f"Control plane unreachable: {str(e)[:100]}"
+
+    def _supabase_get(self, path_and_query):
+        """Query Supabase REST with service-role key. Returns parsed JSON or raises."""
+        url = f"{SUPABASE_URL}/rest/v1/{path_and_query}"
+        req = urllib.request.Request(url, headers={
+            "apikey": os.environ.get("SUPABASE_SERVICE_ROLE_KEY", ""),
+            "Authorization": f"Bearer {os.environ.get('SUPABASE_SERVICE_ROLE_KEY', '')}",
+            "Content-Type": "application/json",
+        })
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return json.loads(resp.read())
+
+    # ── Stats handlers ────────────────────────────────────────────────────────
+
+    def _handle_stats_accounts(self, instance_id):
+        """GET /stats/instances/{id}/accounts — per-account aggregates for the UI."""
+        status, accounts_or_err = self._auth_via_control_plane(instance_id)
+        if status != 200:
+            self._json_response(status, {"error": accounts_or_err})
+            return
+
+        accounts = accounts_or_err  # camelCase from Joey: integrationAccountId, integrationId, name, status, health, ...
+
+        # Pull Supabase aggregates for this instance (one round-trip each).
+        try:
+            stats_rows = self._supabase_get(f"v_account_stats?instance_id=eq.{instance_id}&select=*")
+            breakdown_rows = self._supabase_get(f"v_account_instance_breakdown?instance_id=eq.{instance_id}&select=*")
+        except urllib.error.HTTPError as e:
+            body = e.read()[:300].decode("utf-8", "replace") if e.fp else ""
+            logger.error("Supabase view fetch failed for instance %s: %d %s", instance_id[:8], e.code, body)
+            self._json_response(502, {"error": f"Stats backend error: HTTP {e.code}", "detail": body[:200]})
+            return
+        except Exception as e:
+            logger.error("Supabase view fetch error: %s", e)
+            self._json_response(502, {"error": f"Stats backend unreachable: {str(e)[:100]}"})
+            return
+
+        # Index by integration_account_id for O(1) enrichment.
+        stats_by_aid = {r["integration_account_id"]: r for r in stats_rows}
+        breakdown_by_aid = {}
+        for r in breakdown_rows:
+            breakdown_by_aid.setdefault(r["integration_account_id"], []).append({
+                "tenantId": r["tenant_id"],
+                "twuCount": r["twu_count"],
+            })
+
+        out = []
+        for acc in accounts:
+            aid = acc.get("integrationAccountId", "")
+            stats = stats_by_aid.get(aid, {})
+            out.append({
+                "integrationAccountId": aid,
+                "integrationId":        acc.get("integrationId", ""),
+                "name":                 acc.get("name", ""),
+                "status":               acc.get("status", ""),
+                "health":               acc.get("health", ""),
+                "twuCount":             stats.get("twu_count", 0),
+                "instances":            stats.get("instance_count", 0),
+                "lastSync":             stats.get("last_sync"),
+                "instanceTWUs":         breakdown_by_aid.get(aid, []),
+            })
+
+        self._json_response(200, out)
+
+    def _handle_stats_operations(self, instance_id, account_id):
+        """GET /stats/instances/{id}/accounts/{aid}/operations — recent sync_runs for one account."""
+        status, accounts_or_err = self._auth_via_control_plane(instance_id)
+        if status != 200:
+            self._json_response(status, {"error": accounts_or_err})
+            return
+
+        accounts = accounts_or_err
+        # Enforce that the requested account_id belongs to this instance.
+        account_ids = {a.get("integrationAccountId") for a in accounts}
+        if account_id not in account_ids:
+            self._json_response(404, {"error": "Account not found for this instance"})
+            return
+
+        try:
+            rows = self._supabase_get(
+                f"v_account_recent_runs?integration_account_id=eq.{account_id}"
+                f"&order=started_at.desc&limit=50&select=*"
+            )
+        except urllib.error.HTTPError as e:
+            body = e.read()[:300].decode("utf-8", "replace") if e.fp else ""
+            logger.error("Supabase runs fetch failed for account %s: %d %s", account_id[:8], e.code, body)
+            self._json_response(502, {"error": f"Stats backend error: HTTP {e.code}"})
+            return
+        except Exception as e:
+            logger.error("Supabase runs fetch error: %s", e)
+            self._json_response(502, {"error": f"Stats backend unreachable: {str(e)[:100]}"})
+            return
+
+        out = [
+            {
+                "runId":          r["run_id"],
+                "status":         r["status"],
+                "startedAt":      r["started_at"],
+                "finishedAt":     r.get("finished_at"),
+                "signalsWritten": r.get("signals_written", 0),
+                "durationMs":     r.get("duration_ms"),
+                "error":          r.get("error"),
+                "backfill":       r.get("backfill", False),
+            }
+            for r in rows
+        ]
+        self._json_response(200, out)
 
     def _handle_warming_health(self):
         """Check if warming is running and producing contacts."""
@@ -319,7 +478,7 @@ class IngestionHandler(BaseHTTPRequestHandler):
 
     def _cors_headers(self):
         self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-API-Key")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-API-Key, Authorization")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.send_header("Access-Control-Max-Age", "86400")
 
