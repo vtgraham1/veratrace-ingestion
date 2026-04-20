@@ -22,6 +22,13 @@ jobs:
       # skips and the Phase 1 cutover gate stops gating anything.
       KNOWN_GOOD_INSTANCE_ID: ${{ vars.KNOWN_GOOD_INSTANCE_ID }}
       KNOWN_GOOD_AC_ACCOUNT_ID: ${{ vars.KNOWN_GOOD_AC_ACCOUNT_ID }}
+      # Supabase credentials so registry + sync_runs live tests can reach the
+      # database instead of erroring on URL construction. URL is public (stored
+      # as a variable); service role key is a secret. Without these, tests
+      # failed with "unknown url type: '/rest/v1/...'" — correct gate, wrong
+      # symptom. Let them hit the real Supabase and fail for the real reason.
+      SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
