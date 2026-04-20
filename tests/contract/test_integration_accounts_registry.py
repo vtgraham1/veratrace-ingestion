@@ -30,10 +30,18 @@ KNOWN_GOOD_INSTANCE_ID = os.environ.get("KNOWN_GOOD_INSTANCE_ID", "")
 KNOWN_GOOD_AC_ACCOUNT_ID = os.environ.get("KNOWN_GOOD_AC_ACCOUNT_ID", "")
 
 
-pytestmark = pytest.mark.skipif(
-    not (KNOWN_GOOD_INSTANCE_ID and KNOWN_GOOD_AC_ACCOUNT_ID),
-    reason="Registry env vars not set (KNOWN_GOOD_INSTANCE_ID, KNOWN_GOOD_AC_ACCOUNT_ID)",
-)
+pytestmark = [
+    pytest.mark.skipif(
+        not (KNOWN_GOOD_INSTANCE_ID and KNOWN_GOOD_AC_ACCOUNT_ID),
+        reason="Registry env vars not set (KNOWN_GOOD_INSTANCE_ID, KNOWN_GOOD_AC_ACCOUNT_ID)",
+    ),
+    # Cutover gate — expected to fail until Phase 1 resolves (Joey's M2M filter
+    # update OR some other path that populates the scheduler's data source).
+    # strict=True: when the test starts passing, CI fails with XPASS → signal
+    # to remove this marker and deal with whatever newly activates. Silences
+    # nightly failure emails in the meantime. See project_phase1_eval_...md.
+    pytest.mark.xfail(strict=True, reason="Phase 1 cutover gate — passes when data plane flips"),
+]
 
 
 class TestSchedulerSeesKnownAccount:
