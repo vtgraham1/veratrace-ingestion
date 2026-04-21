@@ -29,3 +29,13 @@ CREATE TABLE IF NOT EXISTS sync_runs (
 CREATE INDEX IF NOT EXISTS sync_runs_account_idx  ON sync_runs (integration_account_id, started_at DESC);
 CREATE INDEX IF NOT EXISTS sync_runs_instance_idx ON sync_runs (instance_id,            started_at DESC);
 CREATE INDEX IF NOT EXISTS sync_runs_status_idx   ON sync_runs (status,                 started_at DESC);
+
+-- Default-deny: RLS on, zero policies. Writes come from scheduler via service
+-- role (bypasses RLS); reads come from the ingestion API's /stats/* endpoints,
+-- also via service role. Anon / authenticated sessions must never see rows —
+-- this table contains integration_account_id, instance_id, and error strings
+-- that can leak customer identity or PII. Supabase flagged this as
+-- `rls_disabled_in_public` on 2026-04-21; the table was exposed to the public
+-- anon key for ~5 days before the advisor noticed. Enabling here so recreates
+-- are safe by construction.
+ALTER TABLE sync_runs ENABLE ROW LEVEL SECURITY;
