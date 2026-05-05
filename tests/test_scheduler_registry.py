@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import sys
+import time
 import urllib.error
 from unittest.mock import patch, MagicMock
 
@@ -21,28 +22,34 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 
-# ── _logfmt helper ────────────────────────────────────────────────────────────
+# ── logfmt helper ─────────────────────────────────────────────────────────────
 
 class TestLogfmt:
     def test_basic_kv(self):
-        from src.sync.scheduler import _logfmt
-        assert _logfmt("foo", a=1, b="bar") == "event=foo a=1 b=bar"
+        from src.runtime.log import logfmt
+        assert logfmt("foo", a=1, b="bar") == "event=foo a=1 b=bar"
 
     def test_quotes_values_with_spaces(self):
-        from src.sync.scheduler import _logfmt
-        out = _logfmt("e", msg="hello world")
-        assert out == 'event=e msg="hello world"'
+        from src.runtime.log import logfmt
+        assert logfmt("e", msg="hello world") == 'event=e msg="hello world"'
 
     def test_escapes_embedded_quotes(self):
-        from src.sync.scheduler import _logfmt
-        out = _logfmt("e", err='HTTP "401"')
-        assert 'err="HTTP \\"401\\""' in out
+        from src.runtime.log import logfmt
+        assert 'err="HTTP \\"401\\""' in logfmt("e", err='HTTP "401"')
 
     def test_omits_none_values(self):
-        from src.sync.scheduler import _logfmt
-        out = _logfmt("e", a=1, b=None, c=2)
+        from src.runtime.log import logfmt
+        out = logfmt("e", a=1, b=None, c=2)
         assert "b=" not in out
         assert "a=1" in out and "c=2" in out
+
+    def test_escapes_newlines_so_multiline_traceback_stays_one_line(self):
+        """A multiline error string must collapse into one logfmt line — otherwise
+        downstream log parsers see a partial event with no closing quote."""
+        from src.runtime.log import logfmt
+        out = logfmt("e", error="line1\nline2\tcol\rend")
+        assert "\n" not in out and "\r" not in out and "\t" not in out
+        assert 'error="line1\\nline2\\tcol\\rend"' in out
 
 
 # ── fetch_active_accounts ─────────────────────────────────────────────────────
@@ -56,51 +63,40 @@ def fake_supabase_url(monkeypatch):
 
 
 class TestFetchActiveAccounts:
-    def _mock_response(self, body, status=200):
-        resp = MagicMock()
-        resp.read.return_value = json.dumps(body).encode()
-        resp.__enter__ = lambda self: resp
-        resp.__exit__ = lambda *a: False
-        return resp
-
-    def test_returns_parsed_list_on_success(self, fake_supabase_url):
+    def test_returns_parsed_list_on_success(self, fake_supabase_url, mock_urlopen_response):
         from src.sync import scheduler
         fixture = [{"integration_account_id": "abc", "status": "ACTIVE"}]
-        with patch("src.sync.scheduler.urllib.request.urlopen", return_value=self._mock_response(fixture)):
-            result = scheduler.fetch_active_accounts()
-        assert result == fixture
+        with patch("src.sync.scheduler.urllib.request.urlopen", return_value=mock_urlopen_response(fixture)):
+            assert scheduler.fetch_active_accounts() == fixture
 
     def test_returns_empty_list_on_404(self, caplog, fake_supabase_url):
         from src.sync import scheduler
-        err = urllib.error.HTTPError(
-            url="http://test", code=404, msg="Not Found", hdrs=None, fp=None
-        )
+        err = urllib.error.HTTPError(url="http://test", code=404, msg="Not Found", hdrs=None, fp=None)
         with caplog.at_level(logging.ERROR, logger="sync"):
             with patch("src.sync.scheduler.urllib.request.urlopen", side_effect=err):
-                result = scheduler.fetch_active_accounts()
-        assert result == []
-        # The 404 must be logged — silent failure is what bit us 2026-04-16
+                assert scheduler.fetch_active_accounts() == []
+        # The 404 must be logged — silent failure is exactly the regression to avoid here.
         assert any("Failed to fetch integration accounts" in r.message for r in caplog.records)
 
-    def test_appends_instance_id_filter_when_provided(self, fake_supabase_url):
+    def test_appends_instance_id_filter_when_provided(self, fake_supabase_url, mock_urlopen_response):
         from src.sync import scheduler
         captured = {}
 
         def fake_urlopen(req, timeout=None):
             captured["url"] = req.full_url
-            return self._mock_response([])
+            return mock_urlopen_response([])
 
         with patch("src.sync.scheduler.urllib.request.urlopen", side_effect=fake_urlopen):
             scheduler.fetch_active_accounts(instance_id="inst-123")
         assert "instance_id=eq.inst-123" in captured["url"]
 
-    def test_omits_instance_filter_when_none(self, fake_supabase_url):
+    def test_omits_instance_filter_when_none(self, fake_supabase_url, mock_urlopen_response):
         from src.sync import scheduler
         captured = {}
 
         def fake_urlopen(req, timeout=None):
             captured["url"] = req.full_url
-            return self._mock_response([])
+            return mock_urlopen_response([])
 
         with patch("src.sync.scheduler.urllib.request.urlopen", side_effect=fake_urlopen):
             scheduler.fetch_active_accounts()
@@ -127,9 +123,11 @@ class TestSyncAccountLogging:
         ends = [r.message for r in caplog.records if "event=sync_account_end" in r.message]
         assert len(starts) == 1
         assert len(ends) == 1
-        assert "account_id=abc12345" in starts[0]
+        # Slicing length is a single source of truth — track scheduler.ID_LOG_PREFIX_LEN.
+        prefix = "abc12345xxxxx"[:scheduler.ID_LOG_PREFIX_LEN]
+        assert f"account_id={prefix}" in starts[0]
         assert "integration_id=nonexistent" in starts[0]
-        assert "status=skipped_no_connector" in ends[0]
+        assert f"status={scheduler.STATUS_SKIPPED_NO_CONNECTOR}" in ends[0]
         assert "duration_ms=" in ends[0]
 
     def test_end_event_emitted_even_on_exception(self, caplog):
@@ -152,29 +150,44 @@ class TestSyncAccountLogging:
 
         ends = [r.message for r in caplog.records if "event=sync_account_end" in r.message]
         assert len(ends) == 1
-        assert "status=error" in ends[0]
+        assert f"status={scheduler.STATUS_ERROR}" in ends[0]
         assert "connector blew up" in ends[0]
 
 
 # ── M2M token + control plane fetch (Phase 1 Option B prep) ─────────────────
 
+@pytest.fixture
+def reset_m2m_cache():
+    """Cache reset for tests that exercise _get_m2m_token; deterministic across runs."""
+    from src.sync import scheduler
+    scheduler._m2m_token_cache["token"] = None
+    scheduler._m2m_token_cache["expires_at"] = 0.0
+    yield
+    scheduler._m2m_token_cache["token"] = None
+    scheduler._m2m_token_cache["expires_at"] = 0.0
+
+
+@pytest.fixture
+def m2m_env(monkeypatch):
+    """Sets the four M2M env vars to reasonable test values."""
+    monkeypatch.setenv("M2M_CLIENT_ID", "cid")
+    monkeypatch.setenv("M2M_CLIENT_SECRET", "csec")
+    monkeypatch.setenv("M2M_TOKEN_ENDPOINT", "https://fake/oauth2/token")
+    monkeypatch.setenv("M2M_SCOPE", "api/read")
+
+
+def _fake_token_response(token="tok-abc", expires_in=3600):
+    resp = MagicMock()
+    resp.read.return_value = json.dumps({
+        "access_token": token, "expires_in": expires_in, "token_type": "Bearer",
+    }).encode()
+    resp.__enter__ = lambda self: resp
+    resp.__exit__ = lambda *a: False
+    return resp
+
+
 class TestM2MToken:
-    def setup_method(self):
-        from src.sync import scheduler
-        # reset cache between tests so caching tests are deterministic
-        scheduler._m2m_token_cache["token"] = None
-        scheduler._m2m_token_cache["expires_at"] = 0.0
-
-    def _fake_token_response(self, token="tok-abc", expires_in=3600):
-        resp = MagicMock()
-        resp.read.return_value = json.dumps({
-            "access_token": token, "expires_in": expires_in, "token_type": "Bearer",
-        }).encode()
-        resp.__enter__ = lambda self: resp
-        resp.__exit__ = lambda *a: False
-        return resp
-
-    def test_returns_none_when_env_missing(self, monkeypatch, caplog):
+    def test_returns_none_when_env_missing(self, reset_m2m_cache, monkeypatch, caplog):
         from src.sync import scheduler
         for k in ("M2M_CLIENT_ID", "M2M_CLIENT_SECRET", "M2M_TOKEN_ENDPOINT", "M2M_SCOPE"):
             monkeypatch.delenv(k, raising=False)
@@ -182,53 +195,47 @@ class TestM2MToken:
             assert scheduler._get_m2m_token() is None
         assert any("event=m2m_token_unavailable" in r.message for r in caplog.records)
 
-    def test_mints_and_caches_token(self, monkeypatch):
+    def test_mints_and_caches_token(self, reset_m2m_cache, m2m_env):
         from src.sync import scheduler
-        monkeypatch.setenv("M2M_CLIENT_ID", "cid")
-        monkeypatch.setenv("M2M_CLIENT_SECRET", "csec")
-        monkeypatch.setenv("M2M_TOKEN_ENDPOINT", "https://fake/oauth2/token")
-        monkeypatch.setenv("M2M_SCOPE", "api/read")
-
-        with patch("src.sync.scheduler.urllib.request.urlopen", return_value=self._fake_token_response("first")) as up:
+        with patch("src.sync.scheduler.urllib.request.urlopen", return_value=_fake_token_response("first")) as up:
             t1 = scheduler._get_m2m_token()
         assert t1 == "first"
         assert up.call_count == 1
 
-        # Second call within TTL: must hit cache (no new urlopen)
-        with patch("src.sync.scheduler.urllib.request.urlopen", return_value=self._fake_token_response("second")) as up2:
+        with patch("src.sync.scheduler.urllib.request.urlopen", return_value=_fake_token_response("second")) as up2:
             t2 = scheduler._get_m2m_token()
         assert t2 == "first"
         assert up2.call_count == 0
 
-    def test_refreshes_when_token_near_expiry(self, monkeypatch):
+    def test_refreshes_when_token_near_expiry(self, reset_m2m_cache, m2m_env):
         from src.sync import scheduler
-        monkeypatch.setenv("M2M_CLIENT_ID", "cid")
-        monkeypatch.setenv("M2M_CLIENT_SECRET", "csec")
-        monkeypatch.setenv("M2M_TOKEN_ENDPOINT", "https://fake/oauth2/token")
-        monkeypatch.setenv("M2M_SCOPE", "api/read")
-
-        # Simulate cached token that expires in 5s — under the 60s skew, must refresh
+        # Cached token expiring in 5s — under the 60s skew, must refresh.
+        # expires_at uses monotonic clock (NTP-jump-safe), so set it accordingly.
         scheduler._m2m_token_cache["token"] = "stale"
-        scheduler._m2m_token_cache["expires_at"] = __import__("time").time() + 5
+        scheduler._m2m_token_cache["expires_at"] = time.monotonic() + 5
 
-        with patch("src.sync.scheduler.urllib.request.urlopen", return_value=self._fake_token_response("fresh")):
-            t = scheduler._get_m2m_token()
-        assert t == "fresh"
+        with patch("src.sync.scheduler.urllib.request.urlopen", return_value=_fake_token_response("fresh")):
+            assert scheduler._get_m2m_token() == "fresh"
 
-    def test_sends_basic_auth_and_form_body(self, monkeypatch):
+    def test_returns_none_on_socket_timeout(self, reset_m2m_cache, m2m_env, caplog):
+        """socket.timeout is NOT a urllib URLError subclass on Python 3.9 (deploy target).
+        Without the explicit catch, a slow Cognito hit would propagate uncaught."""
+        import socket as _socket
         from src.sync import scheduler
-        monkeypatch.setenv("M2M_CLIENT_ID", "cid")
-        monkeypatch.setenv("M2M_CLIENT_SECRET", "csec")
-        monkeypatch.setenv("M2M_TOKEN_ENDPOINT", "https://fake/oauth2/token")
-        monkeypatch.setenv("M2M_SCOPE", "api/read")
+        with caplog.at_level(logging.ERROR, logger="sync"):
+            with patch("src.sync.scheduler.urllib.request.urlopen", side_effect=_socket.timeout("timed out")):
+                assert scheduler._get_m2m_token() is None
+        assert any("event=m2m_token_fetch_failed" in r.message for r in caplog.records)
 
+    def test_sends_basic_auth_and_form_body(self, reset_m2m_cache, m2m_env):
+        from src.sync import scheduler
         captured = {}
 
         def fake(req, timeout=None):
             captured["url"] = req.full_url
             captured["headers"] = dict(req.header_items())
             captured["body"] = req.data
-            return self._fake_token_response()
+            return _fake_token_response()
 
         with patch("src.sync.scheduler.urllib.request.urlopen", side_effect=fake):
             scheduler._get_m2m_token()
@@ -241,30 +248,22 @@ class TestM2MToken:
 
 
 class TestFetchViaControlPlane:
-    def setup_method(self):
-        from src.sync import scheduler
-        scheduler._m2m_token_cache["token"] = None
-        scheduler._m2m_token_cache["expires_at"] = 0.0
-
-    def test_raises_when_token_unavailable(self, monkeypatch):
-        """Must NOT swallow into [] — that's the silent-cascade pattern (cf. feedback_silent_failure_cascade.md)."""
+    def test_raises_when_token_unavailable(self, reset_m2m_cache, monkeypatch):
+        """Must NOT swallow into [] — raising forces the call site to handle the failure."""
         from src.sync import scheduler
         for k in ("M2M_CLIENT_ID", "M2M_CLIENT_SECRET", "M2M_TOKEN_ENDPOINT", "M2M_SCOPE"):
             monkeypatch.delenv(k, raising=False)
         with pytest.raises(scheduler.ControlPlaneFetchError):
             scheduler.fetch_active_accounts_via_control_plane("inst-xxx")
 
-    def test_uses_bearer_token_against_control_plane(self, monkeypatch):
+    def test_uses_bearer_token_against_control_plane(self, reset_m2m_cache, monkeypatch, mock_urlopen_response):
         from src.sync import scheduler
         scheduler._m2m_token_cache["token"] = "test-token"
-        scheduler._m2m_token_cache["expires_at"] = __import__("time").time() + 600
+        scheduler._m2m_token_cache["expires_at"] = time.monotonic() + 600
         monkeypatch.setattr(scheduler, "CONTROL_PLANE_URL", "https://fake.api")
 
         captured = {}
-        resp = MagicMock()
-        resp.read.return_value = json.dumps([{"integrationAccountId": "abc"}]).encode()
-        resp.__enter__ = lambda self: resp
-        resp.__exit__ = lambda *a: False
+        resp = mock_urlopen_response([{"integrationAccountId": "abc"}])
 
         def fake(req, timeout=None):
             captured["url"] = req.full_url
@@ -277,11 +276,11 @@ class TestFetchViaControlPlane:
         assert captured["url"] == "https://fake.api/instances/inst-xxx/integration-accounts"
         assert captured["headers"].get("Authorization") == "Bearer test-token"
 
-    def test_raises_with_response_body_on_http_error(self, monkeypatch):
+    def test_raises_with_response_body_on_http_error(self, reset_m2m_cache, monkeypatch):
         """When Joey's API rejects the M2M token, surface his error body so we can debug."""
         from src.sync import scheduler
         scheduler._m2m_token_cache["token"] = "test-token"
-        scheduler._m2m_token_cache["expires_at"] = __import__("time").time() + 600
+        scheduler._m2m_token_cache["expires_at"] = time.monotonic() + 600
         monkeypatch.setattr(scheduler, "CONTROL_PLANE_URL", "https://fake.api")
 
         err = urllib.error.HTTPError(
@@ -295,29 +294,19 @@ class TestFetchViaControlPlane:
         assert "401" in str(ei.value)
         assert "invalid_token" in str(ei.value)
 
-    def test_handles_none_instance_id_in_log(self, monkeypatch):
+    def test_handles_none_instance_id_in_log(self, reset_m2m_cache):
         """Slice safety: instance_id is a parameter with no default; None must not crash logging."""
         from src.sync import scheduler
         scheduler._m2m_token_cache["token"] = "test-token"
-        scheduler._m2m_token_cache["expires_at"] = __import__("time").time() + 600
+        scheduler._m2m_token_cache["expires_at"] = time.monotonic() + 600
         with patch("src.sync.scheduler.urllib.request.urlopen", side_effect=urllib.error.URLError("boom")):
             with pytest.raises(scheduler.ControlPlaneFetchError):
                 scheduler.fetch_active_accounts_via_control_plane(None)
 
 
 class TestM2MTokenHttpError:
-    """Verify Cognito error-body capture (separate class so it doesn't share TestM2MToken's setup)."""
-    def setup_method(self):
+    def test_logs_body_on_cognito_400(self, reset_m2m_cache, m2m_env, caplog):
         from src.sync import scheduler
-        scheduler._m2m_token_cache["token"] = None
-        scheduler._m2m_token_cache["expires_at"] = 0.0
-
-    def test_logs_body_on_cognito_400(self, monkeypatch, caplog):
-        from src.sync import scheduler
-        monkeypatch.setenv("M2M_CLIENT_ID", "cid")
-        monkeypatch.setenv("M2M_CLIENT_SECRET", "csec")
-        monkeypatch.setenv("M2M_TOKEN_ENDPOINT", "https://fake/oauth2/token")
-        monkeypatch.setenv("M2M_SCOPE", "api/read")
 
         err = urllib.error.HTTPError(
             url="https://fake/oauth2/token", code=400, msg="Bad Request", hdrs=None,
@@ -336,10 +325,8 @@ class TestM2MTokenHttpError:
 class TestDiagnoseAccount:
     def test_returns_false_for_unknown_connector(self, caplog):
         from src.sync import scheduler
-        account = {"integration_id": "nope", "integration_account_id": "x"}
         with caplog.at_level(logging.ERROR, logger="sync"):
-            result = scheduler.diagnose_account(account)
-        assert result is False
+            assert scheduler.diagnose_account({"integration_id": "nope", "integration_account_id": "x"}) is False
         assert any("event=diagnose_result" in r.message and "valid=False" in r.message for r in caplog.records)
 
     def test_returns_connector_validate_result(self, caplog):
@@ -354,8 +341,7 @@ class TestDiagnoseAccount:
                 "external_identity": {},
             }
             with caplog.at_level(logging.INFO, logger="sync"):
-                result = scheduler.diagnose_account(account)
-        assert result is True
+                assert scheduler.diagnose_account(account) is True
         assert any("event=diagnose_result" in r.message and "valid=True" in r.message for r in caplog.records)
 
     def test_parses_credentials_from_string_jsonb(self):
@@ -373,9 +359,36 @@ class TestDiagnoseAccount:
             account = {
                 "integration_id": "x",
                 "integration_account_id": "a",
-                "auth_credentials": '{"roleArn": "arn:..."}',  # string, not dict
+                "auth_credentials": '{"roleArn": "arn:..."}',
                 "external_identity": '{"tenantId": "t"}',
             }
             scheduler.diagnose_account(account)
         assert seen["credentials"] == {"roleArn": "arn:..."}
         assert seen["external_identity"] == {"tenantId": "t"}
+
+
+# ── _parse_account NamedTuple shape ───────────────────────────────────────────
+
+class TestParseAccount:
+    def test_returns_named_tuple_with_typed_fields(self):
+        from src.sync import scheduler
+        parsed = scheduler._parse_account({
+            "integration_id": "amazon-connect",
+            "integration_account_id": "aid-1",
+            "instance_id": "inst-1",
+            "auth_credentials": {"role": "arn"},
+            "external_identity": {"tenant": "t"},
+        })
+        assert isinstance(parsed, scheduler.ParsedAccount)
+        assert parsed.integration_id == "amazon-connect"
+        assert parsed.account_id == "aid-1"
+        assert parsed.instance_id == "inst-1"
+        assert parsed.credentials == {"role": "arn"}
+        assert parsed.external_identity == {"tenant": "t"}
+
+    def test_handles_missing_optional_fields(self):
+        from src.sync import scheduler
+        parsed = scheduler._parse_account({"integration_id": "x"})
+        assert parsed.account_id == ""
+        assert parsed.credentials == {}
+        assert parsed.external_identity == {}

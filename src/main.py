@@ -26,6 +26,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from src.sync.scheduler import sync_account, fetch_active_accounts
 from src.connectors import CONNECTOR_MAP
 from src.config import SUPABASE_URL, CONTROL_PLANE_URL
+from src.runtime.log import http_error_body
 
 INGESTION_API_KEY = os.environ.get("INGESTION_API_KEY", "")
 
@@ -156,7 +157,7 @@ class IngestionHandler(BaseHTTPRequestHandler):
             with urllib.request.urlopen(req, timeout=10) as resp:
                 return 200, json.loads(resp.read())
         except urllib.error.HTTPError as e:
-            body = e.read()[:300].decode("utf-8", "replace") if e.fp else ""
+            body = http_error_body(e)
             if e.code in (401, 403):
                 return e.code, body or "access denied"
             logger.error("Control plane returned %d for instance %s: %s", e.code, instance_id[:8], body)
@@ -192,7 +193,7 @@ class IngestionHandler(BaseHTTPRequestHandler):
             stats_rows = self._supabase_get(f"v_account_stats?instance_id=eq.{instance_id}&select=*")
             breakdown_rows = self._supabase_get(f"v_account_instance_breakdown?instance_id=eq.{instance_id}&select=*")
         except urllib.error.HTTPError as e:
-            body = e.read()[:300].decode("utf-8", "replace") if e.fp else ""
+            body = http_error_body(e)
             logger.error("Supabase view fetch failed for instance %s: %d %s", instance_id[:8], e.code, body)
             self._json_response(502, {"error": f"Stats backend error: HTTP {e.code}", "detail": body[:200]})
             return
@@ -248,7 +249,7 @@ class IngestionHandler(BaseHTTPRequestHandler):
                 f"&order=started_at.desc&limit=50&select=*"
             )
         except urllib.error.HTTPError as e:
-            body = e.read()[:300].decode("utf-8", "replace") if e.fp else ""
+            body = http_error_body(e)
             logger.error("Supabase runs fetch failed for account %s: %d %s", account_id[:8], e.code, body)
             self._json_response(502, {"error": f"Stats backend error: HTTP {e.code}"})
             return
@@ -436,16 +437,27 @@ class IngestionHandler(BaseHTTPRequestHandler):
                 )
                 return
 
-            # Write approved_publish event to pipeline log (same format as pipeline.py)
-            log_file = "/opt/veraagents/blog/memory/blog_pipeline_log.jsonl"
+            # Write approved_publish event to pipeline log. Two things matter here:
+            #   (1) The path MUST match veraagents/blog/pipeline.py's LOG_FILE
+            #       (env OPENCLAW_LOGS or ~/.openclaw/logs/...) — otherwise the
+            #       publish cron's read_log() never sees this event and the post
+            #       sits in draft forever.
+            #   (2) metadata.post_id MUST be the Supabase UUID, not the slug.
+            #       publish.py::publish_post(post_id) queries `id=eq.{post_id}`
+            #       — a slug-keyed value can't resolve.
+            log_dir = os.environ.get(
+                "OPENCLAW_LOGS",
+                os.path.join(os.path.expanduser("~"), ".openclaw", "logs"),
+            )
+            log_file = os.path.join(log_dir, "blog_pipeline_log.jsonl")
             record = {
-                "ts": datetime.datetime.utcnow().isoformat() + "Z",
+                "ts": datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z"),
                 "event": "approved_publish",
                 "slug": slug,
                 "title": post.get("title", ""),
-                "metadata": {"post_id": slug, "approved_via": "email_link"},
+                "metadata": {"post_id": post["id"], "approved_via": "email_link"},
             }
-            os.makedirs(os.path.dirname(log_file), exist_ok=True)
+            os.makedirs(log_dir, exist_ok=True)
             with open(log_file, "a") as f:
                 f.write(json.dumps(record) + "\n")
 

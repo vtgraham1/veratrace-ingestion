@@ -14,6 +14,7 @@ import urllib.error
 import urllib.request
 
 from src.config import SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
+from src.runtime.log import http_error_body, logfmt
 
 logger = logging.getLogger(__name__)
 
@@ -43,17 +44,20 @@ def write_sync_run(run: dict) -> None:
         return
 
     url = f"{SUPABASE_URL}/rest/v1/{SYNC_RUNS_TABLE}"
+    short_aid = run.get("integration_account_id", "?")[:8]
     try:
         req = urllib.request.Request(url, data=json.dumps(run).encode(), headers=_headers(), method="POST")
         urllib.request.urlopen(req, timeout=10)
     except urllib.error.HTTPError as e:
-        body = e.read()[:300].decode("utf-8", "replace") if e.fp else ""
-        logger.error(
-            "event=sync_run_write_failed status=%d account_id=%s body=%s",
-            e.code, run.get("integration_account_id", "?")[:8], body,
-        )
+        logger.error(logfmt(
+            "sync_run_write_failed",
+            status=e.code,
+            account_id=short_aid,
+            body=http_error_body(e),
+        ))
     except (urllib.error.URLError, ValueError) as e:
-        logger.error(
-            "event=sync_run_write_failed account_id=%s error=%s",
-            run.get("integration_account_id", "?")[:8], str(e)[:200],
-        )
+        logger.error(logfmt(
+            "sync_run_write_failed",
+            account_id=short_aid,
+            error=str(e)[:200],
+        ))
