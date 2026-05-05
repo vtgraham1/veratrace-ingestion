@@ -437,16 +437,27 @@ class IngestionHandler(BaseHTTPRequestHandler):
                 )
                 return
 
-            # Write approved_publish event to pipeline log (same format as pipeline.py)
-            log_file = "/opt/veraagents/blog/memory/blog_pipeline_log.jsonl"
+            # Write approved_publish event to pipeline log. Two things matter here:
+            #   (1) The path MUST match veraagents/blog/pipeline.py's LOG_FILE
+            #       (env OPENCLAW_LOGS or ~/.openclaw/logs/...) — otherwise the
+            #       publish cron's read_log() never sees this event and the post
+            #       sits in draft forever.
+            #   (2) metadata.post_id MUST be the Supabase UUID, not the slug.
+            #       publish.py::publish_post(post_id) queries `id=eq.{post_id}`
+            #       — a slug-keyed value can't resolve.
+            log_dir = os.environ.get(
+                "OPENCLAW_LOGS",
+                os.path.join(os.path.expanduser("~"), ".openclaw", "logs"),
+            )
+            log_file = os.path.join(log_dir, "blog_pipeline_log.jsonl")
             record = {
-                "ts": datetime.datetime.utcnow().isoformat() + "Z",
+                "ts": datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z"),
                 "event": "approved_publish",
                 "slug": slug,
                 "title": post.get("title", ""),
-                "metadata": {"post_id": slug, "approved_via": "email_link"},
+                "metadata": {"post_id": post["id"], "approved_via": "email_link"},
             }
-            os.makedirs(os.path.dirname(log_file), exist_ok=True)
+            os.makedirs(log_dir, exist_ok=True)
             with open(log_file, "a") as f:
                 f.write(json.dumps(record) + "\n")
 
