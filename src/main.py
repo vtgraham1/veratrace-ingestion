@@ -26,6 +26,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from src.sync.scheduler import sync_account, fetch_active_accounts
 from src.connectors import CONNECTOR_MAP
 from src.config import SUPABASE_URL, CONTROL_PLANE_URL
+from src.runtime.log import http_error_body
 
 INGESTION_API_KEY = os.environ.get("INGESTION_API_KEY", "")
 
@@ -156,7 +157,7 @@ class IngestionHandler(BaseHTTPRequestHandler):
             with urllib.request.urlopen(req, timeout=10) as resp:
                 return 200, json.loads(resp.read())
         except urllib.error.HTTPError as e:
-            body = e.read()[:300].decode("utf-8", "replace") if e.fp else ""
+            body = http_error_body(e)
             if e.code in (401, 403):
                 return e.code, body or "access denied"
             logger.error("Control plane returned %d for instance %s: %s", e.code, instance_id[:8], body)
@@ -192,7 +193,7 @@ class IngestionHandler(BaseHTTPRequestHandler):
             stats_rows = self._supabase_get(f"v_account_stats?instance_id=eq.{instance_id}&select=*")
             breakdown_rows = self._supabase_get(f"v_account_instance_breakdown?instance_id=eq.{instance_id}&select=*")
         except urllib.error.HTTPError as e:
-            body = e.read()[:300].decode("utf-8", "replace") if e.fp else ""
+            body = http_error_body(e)
             logger.error("Supabase view fetch failed for instance %s: %d %s", instance_id[:8], e.code, body)
             self._json_response(502, {"error": f"Stats backend error: HTTP {e.code}", "detail": body[:200]})
             return
@@ -248,7 +249,7 @@ class IngestionHandler(BaseHTTPRequestHandler):
                 f"&order=started_at.desc&limit=50&select=*"
             )
         except urllib.error.HTTPError as e:
-            body = e.read()[:300].decode("utf-8", "replace") if e.fp else ""
+            body = http_error_body(e)
             logger.error("Supabase runs fetch failed for account %s: %d %s", account_id[:8], e.code, body)
             self._json_response(502, {"error": f"Stats backend error: HTTP {e.code}"})
             return

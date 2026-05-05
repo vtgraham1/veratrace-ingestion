@@ -10,20 +10,25 @@ Usage:
   python3 -m src.sync.scheduler --backfill ACCT_ID # backfill one account
   python3 -m src.sync.scheduler --diagnose FILE    # validate_credentials() only on account dict in FILE
 """
+import argparse
 import base64
 import datetime
 import json
 import logging
 import os
+import socket
 import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from typing import NamedTuple
 
 from src.config import SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, CONTROL_PLANE_URL
 from src.connectors import CONNECTOR_MAP
 from src.runtime.cursor_manager import get_cursor, save_cursor
+from src.runtime.log import http_error_body, logfmt
 from src.runtime.signal_writer import write_signals
 from src.runtime.sync_runs import write_sync_run
 from src.runtime.task_trigger import trigger_compilation
@@ -37,35 +42,26 @@ logger = logging.getLogger("sync")
 logger.info("Registered connectors: %s", list(CONNECTOR_MAP.keys()))
 
 
-# Sync outcome statuses — emitted via _logfmt and grepped by the contract test.
-# Constants prevent silent typo regressions.
 STATUS_OK = "ok"
 STATUS_SKIPPED_NO_CONNECTOR = "skipped_no_connector"
 STATUS_INVALID_CREDENTIALS = "invalid_credentials"
 STATUS_NO_NEW_SIGNALS = "no_new_signals"
 STATUS_ERROR = "error"
 
+# Account/instance UUIDs are 36 chars; logs use a fixed prefix length so grep
+# patterns and downstream log parsers see a consistent shape.
+ID_LOG_PREFIX_LEN = 8
+UNKNOWN_ID = "?"
+
 
 class ControlPlaneFetchError(Exception):
     """Distinguishes 'auth failed / API down' from 'instance has zero accounts'.
 
-    Avoids the silent-failure cascade pattern (feedback_silent_failure_cascade.md):
-    if `fetch_active_accounts_via_control_plane` returned `[]` on auth failure, callers
-    couldn't tell empty-by-config from broken. Raising forces the call site to handle.
+    If `fetch_active_accounts_via_control_plane` returned `[]` on auth failure,
+    callers couldn't tell empty-by-config from broken — and a previous incident
+    showed that swallowed errors stack into multi-week silent regressions.
+    Raising forces the call site to handle the failure mode explicitly.
     """
-
-
-def _logfmt(event, **fields):
-    """Emit a single logfmt-style line: event=foo key=val key2="val with spaces"."""
-    parts = [f"event={event}"]
-    for k, v in fields.items():
-        if v is None:
-            continue
-        s = str(v)
-        if any(c in s for c in (" ", "=", '"')):
-            s = '"' + s.replace('\\', '\\\\').replace('"', '\\"') + '"'
-        parts.append(f"{k}={s}")
-    return " ".join(parts)
 
 
 def _supabase_headers():
@@ -77,7 +73,12 @@ def _supabase_headers():
 
 
 def fetch_active_accounts(instance_id=None):
-    """Fetch all ACTIVE integration accounts from the control plane DB."""
+    """Fetch all ACTIVE integration accounts from the control plane DB.
+
+    TODO(phase1-cutover): currently swallows fetch errors into [] for backwards
+    compatibility. Once Phase 1 lands, raise a typed RegistryFetchError to
+    match `fetch_active_accounts_via_control_plane`.
+    """
     url = f"{SUPABASE_URL}/rest/v1/integration_accounts?status=eq.ACTIVE&select=*"
     if instance_id:
         url += f"&instance_id=eq.{instance_id}"
@@ -92,65 +93,73 @@ def fetch_active_accounts(instance_id=None):
 
 
 # Dormant: Joey's Spring Security rejects M2M tokens (verified 2026-04-16).
+# expires_at is a monotonic-clock value, NOT wall clock — NTP corrections won't
+# extend the cache past Cognito's actual expiry.
 _m2m_token_cache = {"token": None, "expires_at": 0.0}
+_m2m_token_lock = threading.Lock()
 
 
 def _get_m2m_token():
     """Cognito client_credentials token, cached until ~60s before expiry. Returns None on failure."""
-    now = time.time()
-    if _m2m_token_cache["token"] and _m2m_token_cache["expires_at"] > now + 60:
+    if _m2m_token_cache["token"] and _m2m_token_cache["expires_at"] > time.monotonic() + 60:
         return _m2m_token_cache["token"]
 
-    client_id = os.environ.get("M2M_CLIENT_ID", "")
-    client_secret = os.environ.get("M2M_CLIENT_SECRET", "")
-    endpoint = os.environ.get("M2M_TOKEN_ENDPOINT", "")
-    scope = os.environ.get("M2M_SCOPE", "")
+    with _m2m_token_lock:
+        # Re-check inside the lock: another thread may have refreshed while we waited.
+        if _m2m_token_cache["token"] and _m2m_token_cache["expires_at"] > time.monotonic() + 60:
+            return _m2m_token_cache["token"]
 
-    if not all([client_id, client_secret, endpoint, scope]):
-        logger.error(_logfmt(
-            "m2m_token_unavailable",
-            reason="env_not_configured",
-            missing=",".join(k for k, v in [
-                ("M2M_CLIENT_ID", client_id),
-                ("M2M_CLIENT_SECRET", client_secret),
-                ("M2M_TOKEN_ENDPOINT", endpoint),
-                ("M2M_SCOPE", scope),
-            ] if not v),
-        ))
-        return None
+        client_id = os.environ.get("M2M_CLIENT_ID", "")
+        client_secret = os.environ.get("M2M_CLIENT_SECRET", "")
+        endpoint = os.environ.get("M2M_TOKEN_ENDPOINT", "")
+        scope = os.environ.get("M2M_SCOPE", "")
 
-    auth = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
-    body = urllib.parse.urlencode({
-        "grant_type": "client_credentials",
-        "scope": scope,
-    }).encode()
-    req = urllib.request.Request(
-        endpoint,
-        data=body,
-        headers={
-            "Authorization": f"Basic {auth}",
-            "Content-Type": "application/x-www-form-urlencoded",
-        },
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            data = json.loads(resp.read())
-        token = data["access_token"]
-        expires_in = int(data.get("expires_in", 3600))
-        _m2m_token_cache["token"] = token
-        _m2m_token_cache["expires_at"] = now + expires_in
-        logger.info(_logfmt("m2m_token_minted", expires_in=expires_in, scope=scope))
-        return token
-    except urllib.error.HTTPError as e:
-        # Cognito's body distinguishes invalid_client / invalid_scope / invalid_grant.
-        # Without it, "HTTP Error 400: Bad Request" can't tell misconfig from outage.
-        body = e.read()[:300].decode("utf-8", "replace") if e.fp else ""
-        logger.error(_logfmt("m2m_token_fetch_failed", status=e.code, body=body))
-        return None
-    except (urllib.error.URLError, KeyError, ValueError) as e:
-        logger.error(_logfmt("m2m_token_fetch_failed", error=str(e)[:200]))
-        return None
+        if not all([client_id, client_secret, endpoint, scope]):
+            logger.error(logfmt(
+                "m2m_token_unavailable",
+                reason="env_not_configured",
+                missing=",".join(k for k, v in [
+                    ("M2M_CLIENT_ID", client_id),
+                    ("M2M_CLIENT_SECRET", client_secret),
+                    ("M2M_TOKEN_ENDPOINT", endpoint),
+                    ("M2M_SCOPE", scope),
+                ] if not v),
+            ))
+            return None
+
+        auth = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
+        body = urllib.parse.urlencode({
+            "grant_type": "client_credentials",
+            "scope": scope,
+        }).encode()
+        req = urllib.request.Request(
+            endpoint,
+            data=body,
+            headers={
+                "Authorization": f"Basic {auth}",
+                "Content-Type": "application/x-www-form-urlencoded",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read())
+            token = data["access_token"]
+            expires_in = int(data.get("expires_in", 3600))
+            _m2m_token_cache["token"] = token
+            _m2m_token_cache["expires_at"] = time.monotonic() + expires_in
+            logger.info(logfmt("m2m_token_minted", expires_in=expires_in, scope=scope))
+            return token
+        except urllib.error.HTTPError as e:
+            # Cognito's body distinguishes invalid_client / invalid_scope / invalid_grant.
+            # Without it, "HTTP Error 400: Bad Request" can't tell misconfig from outage.
+            logger.error(logfmt("m2m_token_fetch_failed", status=e.code, body=http_error_body(e)))
+            return None
+        except (urllib.error.URLError, socket.timeout, KeyError, ValueError) as e:
+            # socket.timeout is NOT a URLError subclass on Python 3.9 (deploy interpreter),
+            # so it must be listed explicitly or a slow Cognito hit propagates uncaught.
+            logger.error(logfmt("m2m_token_fetch_failed", error=str(e)[:200]))
+            return None
 
 
 def fetch_active_accounts_via_control_plane(instance_id):
@@ -158,8 +167,8 @@ def fetch_active_accounts_via_control_plane(instance_id):
 
     Returns the API's camelCase shape; caller must normalize to snake_case before
     passing to sync_account(). Raises ControlPlaneFetchError when auth or HTTP fails —
-    NEVER returns [] on a failure path (that would resurrect the silent-cascade pattern).
-    An empty list means the instance genuinely has no accounts.
+    NEVER returns [] on a failure path. An empty list means the instance genuinely
+    has no accounts.
     """
     token = _get_m2m_token()
     if not token:
@@ -171,62 +180,71 @@ def fetch_active_accounts_via_control_plane(instance_id):
         with urllib.request.urlopen(req, timeout=15) as resp:
             return json.loads(resp.read())
     except urllib.error.HTTPError as e:
-        body = e.read()[:300].decode("utf-8", "replace") if e.fp else ""
-        logger.error(_logfmt(
+        body = http_error_body(e)
+        logger.error(logfmt(
             "control_plane_fetch_failed",
-            instance_id=(instance_id or "")[:8],
+            instance_id=(instance_id or "")[:ID_LOG_PREFIX_LEN],
             status=e.code,
             body=body,
         ))
         raise ControlPlaneFetchError(f"HTTP {e.code} from control plane: {body[:100]}") from e
-    except (urllib.error.URLError, ValueError) as e:
-        logger.error(_logfmt(
+    except (urllib.error.URLError, socket.timeout, ValueError) as e:
+        logger.error(logfmt(
             "control_plane_fetch_failed",
-            instance_id=(instance_id or "")[:8],
+            instance_id=(instance_id or "")[:ID_LOG_PREFIX_LEN],
             error=str(e)[:200],
         ))
         raise ControlPlaneFetchError(str(e)) from e
 
 
-def _parse_account(account):
-    """Normalize an account dict from either Supabase (JSONB strings) or the control plane.
+class ParsedAccount(NamedTuple):
+    integration_id: str
+    account_id: str
+    instance_id: str
+    credentials: dict
+    external_identity: dict
 
-    Returns a dict with integration_id, account_id, instance_id, credentials, external_identity.
-    """
+
+def _parse_account(account) -> ParsedAccount:
+    """Normalize an account dict from either Supabase (JSONB strings) or the control plane."""
     credentials = account.get("auth_credentials", {}) or {}
     external_identity = account.get("external_identity", {}) or {}
     if isinstance(credentials, str):
         credentials = json.loads(credentials)
     if isinstance(external_identity, str):
         external_identity = json.loads(external_identity)
-    return {
-        "integration_id": account.get("integration_id", ""),
-        "account_id": account.get("integration_account_id", ""),
-        "instance_id": account.get("instance_id", ""),
-        "credentials": credentials,
-        "external_identity": external_identity,
-    }
+    return ParsedAccount(
+        integration_id=account.get("integration_id", ""),
+        account_id=account.get("integration_account_id", ""),
+        instance_id=account.get("instance_id", ""),
+        credentials=credentials,
+        external_identity=external_identity,
+    )
+
+
+def _short(account_id: str) -> str:
+    return account_id[:ID_LOG_PREFIX_LEN] or UNKNOWN_ID
 
 
 def sync_account(account, backfill=False):
     """Run a sync for a single integration account."""
     parsed = _parse_account(account)
-    integration_id = parsed["integration_id"]
-    account_id = parsed["account_id"]
-    instance_id = parsed["instance_id"]
-    credentials = parsed["credentials"]
-    external_identity = parsed["external_identity"]
+    integration_id = parsed.integration_id
+    account_id = parsed.account_id
+    instance_id = parsed.instance_id
+    credentials = parsed.credentials
+    external_identity = parsed.external_identity
 
     started_at = time.time()
     signals_written = 0
     status = STATUS_OK
     error = None
 
-    logger.info(_logfmt(
+    logger.info(logfmt(
         "sync_account_start",
-        account_id=account_id[:8] or "?",
-        integration_id=integration_id or "?",
-        instance_id=instance_id[:8] or "?",
+        account_id=_short(account_id),
+        integration_id=integration_id or UNKNOWN_ID,
+        instance_id=_short(instance_id),
         backfill=backfill,
     ))
 
@@ -238,7 +256,7 @@ def sync_account(account, backfill=False):
             return
 
         logger.info("Instantiating %s connector for account %s (cred_keys=%s, identity_keys=%s)",
-                    integration_id, account_id[:8], list(credentials.keys()), list(external_identity.keys()))
+                    integration_id, _short(account_id), list(credentials.keys()), list(external_identity.keys()))
 
         connector = connector_cls(
             instance_id=instance_id,
@@ -249,38 +267,37 @@ def sync_account(account, backfill=False):
 
         if not connector.validate_credentials():
             logger.error("Invalid credentials for account %s (keys present: %s), skipping",
-                         account_id[:8], list(credentials.keys()))
+                         _short(account_id), list(credentials.keys()))
             status = STATUS_INVALID_CREDENTIALS
             return
 
         stream = f"{integration_id}:contacts"
 
         if backfill:
-            logger.info("Starting backfill for %s (account=%s)", integration_id, account_id[:8])
+            logger.info("Starting backfill for %s (account=%s)", integration_id, _short(account_id))
             result = connector.sync_backfill()
         else:
             cursor = get_cursor(account_id, stream)
             logger.info(
                 "Incremental sync for %s (account=%s, cursor=%s)",
-                integration_id, account_id[:8], cursor[:20] if cursor else "none",
+                integration_id, _short(account_id), cursor[:20] if cursor else "none",
             )
             result = connector.sync_incremental(cursor)
 
         if not result.signals:
-            logger.info("No new signals (account=%s)", account_id[:8])
+            logger.info("No new signals (account=%s)", _short(account_id))
             status = STATUS_NO_NEW_SIGNALS
             return
 
         signals_written = write_signals(result.signals)
-        logger.info("Wrote %d signals (account=%s)", signals_written, account_id[:8])
+        logger.info("Wrote %d signals (account=%s)", signals_written, _short(account_id))
 
-        # Save cursor AFTER successful write
         if result.cursor:
             save_cursor(account_id, stream, result.cursor, records_synced=signals_written)
 
         task = trigger_compilation(instance_id, [account_id])
         if task:
-            logger.info("Triggered compiler task %s", task.get("taskId", "?")[:8])
+            logger.info("Triggered compiler task %s", task.get("taskId", "?")[:ID_LOG_PREFIX_LEN])
         else:
             logger.warning("Compiler task trigger failed (non-fatal)")
 
@@ -290,16 +307,15 @@ def sync_account(account, backfill=False):
         raise
     finally:
         duration_ms = int((time.time() - started_at) * 1000)
-        logger.info(_logfmt(
+        logger.info(logfmt(
             "sync_account_end",
-            account_id=account_id[:8] or "?",
-            integration_id=integration_id or "?",
+            account_id=_short(account_id),
+            integration_id=integration_id or UNKNOWN_ID,
             status=status,
             signals_written=signals_written,
             duration_ms=duration_ms,
             error=error,
         ))
-        # Persist the same event to sync_runs for durable querying.
         # write_sync_run swallows failures — observability must never break sync.
         write_sync_run({
             "integration_account_id": account_id,
@@ -310,35 +326,41 @@ def sync_account(account, backfill=False):
             "duration_ms": duration_ms,
             "error": error,
             "backfill": bool(backfill),
-            "finished_at": datetime.datetime.utcnow().isoformat() + "Z",
+            "finished_at": datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z"),
         })
 
 
 def diagnose_account(account):
     """Validate credentials only — no sync, no writes. Returns True if valid."""
     parsed = _parse_account(account)
-    integration_id = parsed["integration_id"]
-    account_id = parsed["account_id"] or "diagnose"
-    instance_id = parsed["instance_id"] or "diagnose"
-    credentials = parsed["credentials"]
-    external_identity = parsed["external_identity"]
+    integration_id = parsed.integration_id
+    account_id = parsed.account_id
+    instance_id = parsed.instance_id
+    credentials = parsed.credentials
+    external_identity = parsed.external_identity
 
     connector_cls = CONNECTOR_MAP.get(integration_id)
     if not connector_cls:
-        logger.error(_logfmt("diagnose_result", account_id=account_id[:8], integration_id=integration_id, valid=False, reason="no_connector"))
+        logger.error(logfmt(
+            "diagnose_result",
+            account_id=_short(account_id),
+            integration_id=integration_id,
+            valid=False,
+            reason="no_connector",
+        ))
         return False
 
     connector = connector_cls(
-        instance_id=instance_id,
-        integration_account_id=account_id,
+        instance_id=instance_id or UNKNOWN_ID,
+        integration_account_id=account_id or UNKNOWN_ID,
         credentials=credentials,
         external_identity=external_identity,
     )
 
     valid = connector.validate_credentials()
-    logger.info(_logfmt(
+    logger.info(logfmt(
         "diagnose_result",
-        account_id=account_id[:8],
+        account_id=_short(account_id),
         integration_id=integration_id,
         valid=valid,
         cred_keys=",".join(sorted(credentials.keys())),
@@ -354,56 +376,53 @@ def run_all(backfill=False):
     for account in accounts:
         try:
             sync_account(account, backfill=backfill)
-        except Exception as e:
-            logger.error(
-                "Sync failed for account %s: %s",
-                account.get("integration_account_id", "?")[:8],
-                str(e)[:200],
-            )
+        except Exception:
+            # sync_account_end already logged the failure with full status/error fields;
+            # just keep iterating so one bad account doesn't block the rest.
+            pass
+
+
+def _build_arg_parser():
+    p = argparse.ArgumentParser(
+        prog="python3 -m src.sync.scheduler",
+        description="Sync scheduler for integration accounts.",
+    )
+    g = p.add_mutually_exclusive_group()
+    g.add_argument("--account", metavar="ACCT_ID", help="Sync a single account by integration_account_id")
+    g.add_argument("--backfill", metavar="ACCT_ID", help="Backfill a single account (full sync)")
+    g.add_argument("--diagnose", metavar="FILE", help="Run validate_credentials() against an account dict in JSON file")
+    return p
+
+
+def _sync_one(acct_id: str, backfill: bool):
+    accounts = fetch_active_accounts()
+    acct = next((a for a in accounts if a.get("integration_account_id") == acct_id), None)
+    if not acct:
+        logger.error("Account not found: %s", acct_id)
+        sys.exit(1)
+    sync_account(acct, backfill=backfill)
+
+
+def _diagnose_from_file(path: str) -> int:
+    try:
+        with open(path) as f:
+            acct = json.load(f)
+    except FileNotFoundError:
+        logger.error("--diagnose: file not found: %s", path)
+        return 2
+    except json.JSONDecodeError as e:
+        logger.error("--diagnose: %s is not valid JSON: %s", path, e)
+        return 2
+    return 0 if diagnose_account(acct) else 1
 
 
 if __name__ == "__main__":
-    args = sys.argv[1:]
-
-    if "--diagnose" in args:
-        idx = args.index("--diagnose")
-        if idx + 1 >= len(args):
-            logger.error("--diagnose requires a path to an account-dict JSON file")
-            sys.exit(2)
-        path = args[idx + 1]
-        try:
-            with open(path) as f:
-                acct = json.load(f)
-        except FileNotFoundError:
-            logger.error("--diagnose: file not found: %s", path)
-            sys.exit(2)
-        except json.JSONDecodeError as e:
-            logger.error("--diagnose: %s is not valid JSON: %s", path, e)
-            sys.exit(2)
-        sys.exit(0 if diagnose_account(acct) else 1)
-    elif "--backfill" in args:
-        idx = args.index("--backfill")
-        if idx + 1 < len(args):
-            acct_id = args[idx + 1]
-            accounts = fetch_active_accounts()
-            acct = next((a for a in accounts if a.get("integration_account_id") == acct_id), None)
-            if acct:
-                sync_account(acct, backfill=True)
-            else:
-                logger.error("Account not found: %s", acct_id)
-        else:
-            logger.error("--backfill requires an account ID")
-    elif "--account" in args:
-        idx = args.index("--account")
-        if idx + 1 < len(args):
-            acct_id = args[idx + 1]
-            accounts = fetch_active_accounts()
-            acct = next((a for a in accounts if a.get("integration_account_id") == acct_id), None)
-            if acct:
-                sync_account(acct)
-            else:
-                logger.error("Account not found: %s", acct_id)
-        else:
-            logger.error("--account requires an account ID")
+    ns = _build_arg_parser().parse_args()
+    if ns.diagnose:
+        sys.exit(_diagnose_from_file(ns.diagnose))
+    elif ns.backfill:
+        _sync_one(ns.backfill, backfill=True)
+    elif ns.account:
+        _sync_one(ns.account, backfill=False)
     else:
         run_all()
